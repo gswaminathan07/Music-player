@@ -1,5 +1,5 @@
 // Vettify Service Worker - Advanced Background Audio & Offline Audio Engine
-const STATIC_CACHE = 'vettify-static-v2';
+const STATIC_CACHE = 'vettify-static-v3-bust';
 const AUDIO_CACHE = 'vettify-audio-v1';
 
 const STATIC_ASSETS = [
@@ -12,8 +12,9 @@ const STATIC_ASSETS = [
   '/pwa-maskable.png',
 ];
 
-// Install: precache critical app shell
+// Install: precache critical app shell and skip waiting immediately
 self.addEventListener('install', (event) => {
+  self.skipWaiting();
   event.waitUntil(
     caches.open(STATIC_CACHE).then((cache) => {
       return cache.addAll(STATIC_ASSETS).catch((err) => {
@@ -21,10 +22,9 @@ self.addEventListener('install', (event) => {
       });
     })
   );
-  self.skipWaiting();
 });
 
-// Activate: clean obsolete cache versions and claim clients
+// Activate: purge all obsolete cache versions immediately and claim all clients
 self.addEventListener('activate', (event) => {
   event.waitUntil(
     caches.keys().then((keys) => {
@@ -35,9 +35,8 @@ self.addEventListener('activate', (event) => {
           }
         })
       );
-    })
+    }).then(() => self.clients.claim())
   );
-  self.clients.claim();
 });
 
 // Helper: check if request is for audio
@@ -131,18 +130,24 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // Cache-first strategy for static assets
+  // Network-first strategy for scripts, styles, and static assets (guarantees instant updates)
   event.respondWith(
-    caches.match(event.request).then((cached) => {
-      if (cached) return cached;
-      return fetch(event.request).then((response) => {
-        if (response && response.status === 200 && response.type === 'basic') {
-          const clone = response.clone();
+    fetch(event.request)
+      .then((networkResponse) => {
+        if (networkResponse && networkResponse.status === 200 && networkResponse.type === 'basic') {
+          const clone = networkResponse.clone();
           caches.open(STATIC_CACHE).then((c) => c.put(event.request, clone));
         }
-        return response;
-      });
-    })
+        return networkResponse;
+      })
+      .catch(async () => {
+        const cached = await caches.match(event.request);
+        if (cached) return cached;
+        if (event.request.headers.get('accept')?.includes('text/html')) {
+          return (await caches.match('/index.html')) || (await caches.match('/'));
+        }
+        return new Response('Offline', { status: 503, statusText: 'Offline' });
+      })
   );
 });
 
@@ -151,6 +156,11 @@ self.addEventListener('message', (event) => {
   if (!event.data) return;
 
   const { type, url } = event.data;
+
+  if (type === 'SKIP_WAITING') {
+    self.skipWaiting();
+    return;
+  }
 
   // Keep Audio Context and tab event loop active on Android
   if (type === 'KEEP_AUDIO_ACTIVE') {

@@ -28,28 +28,43 @@ export const AudioVisualizer: React.FC<AudioVisualizerProps> = ({
 
     const updateWidth = () => {
       if (mode === 'minimal') {
-        canvas.width = 24;
+        if (canvas.width !== 24) canvas.width = 24;
       } else if (canvas.parentElement) {
-        const parentW = canvas.parentElement.clientWidth;
-        if (parentW > 0 && canvas.width !== parentW) {
+        const parentW = Math.floor(canvas.parentElement.clientWidth);
+        if (parentW > 0 && Math.abs(canvas.width - parentW) >= 2) {
           canvas.width = parentW;
         }
       }
     };
     updateWidth();
 
-    const resizeObserver = new ResizeObserver(() => {
-      updateWidth();
+    let resizeRafId: number | null = null;
+    const resizeObserver = new ResizeObserver((entries) => {
+      if (!entries || !entries.length) return;
+      if (resizeRafId !== null) {
+        cancelAnimationFrame(resizeRafId);
+      }
+      resizeRafId = requestAnimationFrame(() => {
+        updateWidth();
+        resizeRafId = null;
+      });
     });
     if (canvas.parentElement) {
       resizeObserver.observe(canvas.parentElement);
     }
+
+    let lastTime = performance.now();
 
     const render = () => {
       if (typeof document !== 'undefined' && document.hidden) {
         animId = requestAnimationFrame(render);
         return;
       }
+
+      const now = performance.now();
+      const dt = Math.min(0.05, Math.max(0.001, (now - lastTime) / 1000));
+      lastTime = now;
+
       const width = canvas.width || 280;
       const h = canvas.height || height;
       ctx.clearRect(0, 0, width, h);
@@ -58,8 +73,8 @@ export const AudioVisualizer: React.FC<AudioVisualizerProps> = ({
 
       if (mode === 'bars') {
         // High-precision studio audio spectrum analyzer with logarithmic frequency scaling
-        const barCount = Math.max(18, Math.min(42, Math.floor(width / 9)));
-        const barWidth = Math.max(2.5, (width / barCount) * 0.68);
+        const barCount = Math.max(18, Math.min(48, Math.floor(width / 8.5)));
+        const barWidth = Math.max(2.5, (width / barCount) * 0.7);
         const gap = (width - barCount * barWidth) / Math.max(1, barCount - 1);
 
         // Ensure state arrays match bar count
@@ -71,13 +86,11 @@ export const AudioVisualizer: React.FC<AudioVisualizerProps> = ({
         const smoothed = smoothedBarsRef.current;
         const peaks = peakBarsRef.current;
 
+        // Smooth physics coefficients calibrated for natural analog meter ballistics
+        const decayRate = Math.pow(0.18, dt * 6.5);
+        const peakDropSpeed = 160 * dt;
+
         for (let i = 0; i < barCount; i++) {
-          // Logarithmic audio frequency distribution across spectrum:
-          // Low index: Sub-bass (32Hz)
-          // Quarter index: Bass & Lower Mids (250Hz)
-          // Center index: Lead Vocals / Snare (1kHz)
-          // Three-quarter index: Presence & Guitars (4kHz)
-          // High index: Air & Cymbals (16kHz)
           const minFreqBin = 1;
           const maxFreqBin = Math.max(minFreqBin + 2, Math.floor(frequencyData.length * 0.85));
           const logFactor = Math.pow(maxFreqBin / minFreqBin, i / (barCount - 1));
@@ -85,18 +98,18 @@ export const AudioVisualizer: React.FC<AudioVisualizerProps> = ({
 
           const rawValue = isPlaying ? (frequencyData[dataIndex] || 0) : 0;
 
-          // Studio ballistic filter: Instantaneous attack (up), smooth decay (down)
+          // Studio ballistic filter: Ultra-fast instantaneous attack, exponential smooth decay
           if (rawValue > smoothed[i]) {
             smoothed[i] = rawValue;
           } else {
-            smoothed[i] = Math.max(0, smoothed[i] * 0.86);
+            smoothed[i] = Math.max(0, smoothed[i] * decayRate);
           }
 
-          // Peak hold with gravity falloff
+          // Peak hold with fluid gravity falloff
           if (smoothed[i] >= peaks[i]) {
             peaks[i] = smoothed[i];
           } else {
-            peaks[i] = Math.max(0, peaks[i] - 3.5);
+            peaks[i] = Math.max(0, peaks[i] - peakDropSpeed);
           }
 
           const barHeight = Math.max(2, (smoothed[i] / 255) * (h * 0.85));
@@ -116,9 +129,9 @@ export const AudioVisualizer: React.FC<AudioVisualizerProps> = ({
           ctx.fillRect(x, y, barWidth, barHeight);
 
           // Top peak hold LED
-          if (peaks[i] > 8) {
+          if (peaks[i] > 6) {
             const peakY = Math.max(0, h - (peaks[i] / 255) * (h * 0.85) - 2.5);
-            ctx.fillStyle = intensity > 0.85 ? '#fed7aa' : '#fb923c';
+            ctx.fillStyle = intensity > 0.85 ? '#fed7aa' : '#f97316';
             ctx.fillRect(x, peakY, barWidth, 1.5);
           }
         }
@@ -175,6 +188,9 @@ export const AudioVisualizer: React.FC<AudioVisualizerProps> = ({
 
     return () => {
       cancelAnimationFrame(animId);
+      if (resizeRafId !== null) {
+        cancelAnimationFrame(resizeRafId);
+      }
       resizeObserver.disconnect();
     };
   }, [mode, isPlaying, height]);

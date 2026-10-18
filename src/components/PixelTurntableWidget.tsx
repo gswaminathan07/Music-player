@@ -54,10 +54,10 @@ export const PixelTurntableWidget: React.FC<PixelTurntableWidgetProps> = ({
     lg: { disc: 'w-60 h-60 sm:w-72 sm:h-72 md:w-80 md:h-80', center: 'w-10 h-10', spindle: 'w-3 h-3', tonearm: 'w-13 h-26 sm:w-15 sm:h-30 right-3 top-2.5' },
     xl: { disc: 'w-64 h-64 sm:w-80 sm:h-80 md:w-96 md:h-96', center: 'w-11 h-11', spindle: 'w-3.5 h-3.5', tonearm: 'w-15 h-30 sm:w-18 sm:h-36 right-3.5 top-3' },
     master: {
-      disc: 'w-60 h-60 xs:w-68 xs:h-68 sm:w-76 sm:h-76 md:w-[320px] md:h-[320px] lg:w-[360px] lg:h-[360px] xl:w-[390px] xl:h-[390px] max-w-[85vw] max-h-[85vw] aspect-square',
+      disc: 'w-52 h-52 xs:w-60 xs:h-60 sm:w-72 sm:h-72 md:w-[320px] md:h-[320px] lg:w-[350px] lg:h-[350px] xl:w-[390px] xl:h-[390px] max-w-[84vw] max-h-[38vh] sm:max-h-none aspect-square',
       center: 'w-10 h-10 sm:w-12 sm:h-12',
-      spindle: 'w-3 h-3 sm:w-3.5 sm:h-3.5',
-      tonearm: 'w-14 h-28 sm:w-16 sm:h-32 md:w-20 md:h-40 right-3.5 top-3',
+      spindle: 'w-2.5 h-2.5 sm:w-3.5 sm:h-3.5',
+      tonearm: 'w-13 h-26 sm:w-16 sm:h-32 md:w-20 md:h-40 right-2 sm:right-3.5 top-1.5 sm:top-3',
     },
   }[size] || {
     disc: 'w-60 h-60 sm:w-72 sm:h-72',
@@ -96,7 +96,7 @@ export const PixelTurntableWidget: React.FC<PixelTurntableWidgetProps> = ({
   return (
     <div className={`flex flex-col items-center select-none ${className}`}>
       {/* Precision Turntable Base */}
-      <div className="relative p-3.5 sm:p-4 bg-[#141418] border border-zinc-800 rounded-3xl shadow-2xl">
+      <div className="relative p-1.5 sm:p-3.5 bg-[#141418] border border-zinc-800 rounded-xl sm:rounded-3xl shadow-xl">
         {/* Tonearm graphic overlay */}
         <div className={`absolute ${dimensions.tonearm} pointer-events-none z-20`}>
           <svg viewBox="0 0 50 90" className="w-full h-full opacity-90 drop-shadow-md">

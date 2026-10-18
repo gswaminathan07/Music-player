@@ -12,11 +12,18 @@ class LyricsService {
       // Also index by normalized artist:title
       const key = this.normalizeKey(data.title, data.artist);
       this.memoryCache.set(key, data);
+      // Index known aliases
+      if (/p\.?y\.?t\.?/i.test(data.title)) {
+        this.memoryCache.set('pyt::michael jackson', data);
+        this.memoryCache.set('p.y.t.::michael jackson', data);
+        this.memoryCache.set('p.y.t::michael jackson', data);
+        this.memoryCache.set('pyt::', data);
+      }
     });
   }
 
   private normalizeKey(title: string, artist: string): string {
-    return `${title.toLowerCase().trim()}::${artist.toLowerCase().trim()}`;
+    return `${(title || '').toLowerCase().trim()}::${(artist || '').toLowerCase().trim()}`;
   }
 
   /**
@@ -24,7 +31,19 @@ class LyricsService {
    * default studio verified database, and finally Google Search Grounding API.
    */
   async getLyricsForTrack(track: Track, forceRefresh = false): Promise<SongLyricsData> {
-    const normKey = this.normalizeKey(track.title, track.artist);
+    let cleanTitle = track.title || '';
+    let cleanArtist = track.artist || '';
+
+    // Expand acronyms for instant cache hit
+    if (/^(p\.?y\.?t\.?|pyt(\s*\(.*?\))?)$/i.test(cleanTitle.trim())) {
+      cleanTitle = 'P.Y.T. (Pretty Young Thing)';
+      if (!cleanArtist || /unknown|local|device/i.test(cleanArtist)) {
+        cleanArtist = 'Michael Jackson';
+      }
+    }
+
+    const normKey = this.normalizeKey(cleanTitle, cleanArtist);
+    const rawKey = this.normalizeKey(track.title, track.artist);
 
     if (!forceRefresh) {
       // 1. Check memory cache
@@ -33,6 +52,9 @@ class LyricsService {
       }
       if (this.memoryCache.has(normKey)) {
         return this.memoryCache.get(normKey)!;
+      }
+      if (this.memoryCache.has(rawKey)) {
+        return this.memoryCache.get(rawKey)!;
       }
 
       // 2. Check IndexedDB persistent cache

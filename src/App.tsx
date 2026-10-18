@@ -59,6 +59,9 @@ import {
   RefreshCw,
   Laptop,
   Smartphone,
+  Mic2,
+  Sun,
+  Moon,
 } from 'lucide-react';
 import { sanitizeTrack } from './utils/trackFormatter';
 import { readAudioTags } from './services/audioTagReader';
@@ -119,11 +122,41 @@ export default function App() {
       setMeterDb('-∞ dB');
       return;
     }
-    const timer = setInterval(() => {
+    let animId: number;
+    const updateLoop = () => {
+      // 60-120 FPS native frame rate loop for silky smooth analog meter ballistics
       setMeterDb(audioEngine.getPeakLevelDb().formattedDb);
-    }, 90);
-    return () => clearInterval(timer);
+      animId = requestAnimationFrame(updateLoop);
+    };
+    animId = requestAnimationFrame(updateLoop);
+    return () => cancelAnimationFrame(animId);
   }, [isPlaying]);
+
+  // Studio Theme & Accessibility
+  const isLightMode = preferences.theme === 'light';
+
+  useEffect(() => {
+    const storedTheme = typeof window !== 'undefined' ? localStorage.getItem('vettify_theme') : null;
+    if (storedTheme && (storedTheme === 'light' || storedTheme === 'dark-oled')) {
+      setPreferences((prev) => ({ ...prev, theme: storedTheme as any }));
+    }
+  }, []);
+
+  useEffect(() => {
+    if (typeof document !== 'undefined') {
+      document.body.classList.toggle('light-theme', isLightMode);
+    }
+  }, [isLightMode]);
+
+  const handleToggleTheme = () => {
+    const nextTheme: UserPreferences['theme'] = isLightMode ? 'dark-oled' : 'light';
+    const newPrefs: UserPreferences = { ...preferences, theme: nextTheme };
+    setPreferences(newPrefs);
+    offlineStorage.setKV('user_preferences', newPrefs);
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('vettify_theme', nextTheme);
+    }
+  };
 
   // UI Navigation & Modals
   const [activeNav, setActiveNav] = useState<'library' | 'deck' | 'equalizer' | 'collections'>('library');
@@ -860,59 +893,98 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen bg-[#0c0c0e] text-zinc-100 flex flex-col justify-between selection:bg-orange-500 selection:text-white">
+    <div className={`min-h-screen flex flex-col justify-between selection:bg-orange-500 selection:text-white transition-colors duration-200 ${
+      isLightMode ? 'bg-slate-100 text-slate-900' : 'bg-[#0c0c0e] text-zinc-100'
+    }`}>
       {/* 
         ZONE 1-3 TOP BAR CONTRACT:
         [Wordmark: Vettify] -- [Nav links: Library · Deck · Equalizer · Collections] -- [Primary CTA: Import Audio]
       */}
-      <header className="sticky top-0 z-30 bg-[#121216] border-b border-zinc-800 px-4 sm:px-8 py-3">
+      <header className={`sticky top-0 z-30 border-b px-4 sm:px-8 py-3 transition-colors duration-200 ${
+        isLightMode
+          ? 'bg-white/90 backdrop-blur-md border-slate-200 text-slate-800 shadow-xs'
+          : 'bg-[#121216] border-zinc-800 text-zinc-100'
+      }`}>
         <div className="max-w-6xl mx-auto flex items-center justify-between gap-8">
           {/* Zone 1: Brand Wordmark */}
           <div className="flex items-center gap-3 shrink-0">
-            <span className="text-sm font-bold tracking-tight text-white whitespace-nowrap">
+            <span className={`text-sm font-bold tracking-tight whitespace-nowrap ${
+              isLightMode ? 'text-slate-900' : 'text-white'
+            }`}>
               Vettify
             </span>
-            <span className="text-[11px] font-mono text-zinc-500 uppercase tracking-wider hidden sm:inline">
+            <span className={`text-[11px] font-mono uppercase tracking-wider hidden sm:inline ${
+              isLightMode ? 'text-slate-500' : 'text-zinc-500'
+            }`}>
               Studio Player
             </span>
           </div>
 
           {/* Zone 2: Navigation Links */}
-          <nav className="hidden md:flex items-center gap-6 text-xs font-medium text-zinc-400">
+          <nav className={`hidden md:flex items-center gap-6 text-xs font-medium ${
+            isLightMode ? 'text-slate-600' : 'text-zinc-400'
+          }`}>
             <button
               onClick={() => setActiveNav('library')}
-              className={`hover:text-white transition whitespace-nowrap ${
-                activeNav === 'library' ? 'text-white font-semibold' : ''
+              className={`hover:opacity-100 transition whitespace-nowrap ${
+                activeNav === 'library'
+                  ? (isLightMode ? 'text-slate-950 font-bold' : 'text-white font-semibold')
+                  : ''
               }`}
             >
               Track Library
             </button>
             <button
               onClick={() => setActiveNav('deck')}
-              className={`hover:text-white transition whitespace-nowrap ${
-                activeNav === 'deck' ? 'text-white font-semibold' : ''
+              className={`hover:opacity-100 transition whitespace-nowrap ${
+                activeNav === 'deck'
+                  ? (isLightMode ? 'text-slate-950 font-bold' : 'text-white font-semibold')
+                  : ''
               }`}
             >
               Master Deck
             </button>
             <button
               onClick={() => setIsEqOpen(true)}
-              className="hover:text-white transition whitespace-nowrap"
+              className="hover:opacity-100 transition whitespace-nowrap"
             >
               Parametric EQ
             </button>
             <button
               onClick={() => setActiveNav('collections')}
-              className={`hover:text-white transition whitespace-nowrap ${
-                activeNav === 'collections' ? 'text-white font-semibold' : ''
+              className={`hover:opacity-100 transition whitespace-nowrap ${
+                activeNav === 'collections'
+                  ? (isLightMode ? 'text-slate-950 font-bold' : 'text-white font-semibold')
+                  : ''
               }`}
             >
               Collections
             </button>
           </nav>
 
-          {/* Zone 3: Primary Action Button */}
+          {/* Zone 3: Primary Action Button & Theme Toggle */}
           <div className="flex items-center gap-2 shrink-0">
+            {/* Quick Theme Toggle Button */}
+            <button
+              onClick={handleToggleTheme}
+              className={`px-2.5 py-1.5 rounded-lg border transition flex items-center gap-1.5 text-xs font-semibold shadow-xs ${
+                isLightMode
+                  ? 'bg-amber-100/90 border-amber-300 text-amber-950 hover:bg-amber-200'
+                  : 'bg-zinc-800/80 border-zinc-700/80 text-zinc-300 hover:text-white hover:bg-zinc-700'
+              }`}
+              title={isLightMode ? 'Switch to Dark Studio' : 'Switch to High-Contrast Light Studio'}
+              aria-label="Toggle Studio Theme"
+            >
+              {isLightMode ? (
+                <Sun className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+              ) : (
+                <Moon className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+              )}
+              <span className="hidden sm:inline text-[11px]">
+                {isLightMode ? 'Light' : 'Dark'}
+              </span>
+            </button>
+
             {/* Cloud Sync Button */}
             <button
               onClick={() => setIsCloudSyncOpen(true)}
@@ -938,7 +1010,9 @@ export default function App() {
             </button>
             <button
               onClick={() => setIsSettingsOpen(true)}
-              className="p-2 rounded-lg text-zinc-400 hover:text-white hover:bg-zinc-800 transition"
+              className={`hidden sm:flex p-2 rounded-lg transition ${
+                isLightMode ? 'text-slate-600 hover:text-slate-950 hover:bg-slate-200/80' : 'text-zinc-400 hover:text-white hover:bg-zinc-800'
+              }`}
               title="Settings"
               aria-label="Settings"
             >
@@ -989,26 +1063,42 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Master Studio Console Grid: Fits prominent platter and controls cleanly side-by-side */}
-              <div className="grid grid-cols-1 md:grid-cols-12 gap-5 lg:gap-8 items-center flex-1 min-h-0 py-1">
-                {/* Left Column (6 Cols): Prominent Whole-Spin Platter */}
-                <div className="md:col-span-6 flex flex-col items-center justify-center py-2">
-                  <PixelTurntableWidget
-                    currentTrack={currentTrack}
-                    isPlaying={isPlaying}
-                    onPlayPause={handlePlayPause}
-                    onNext={handleNextTrack}
-                    onPrev={handlePrevTrack}
-                    onToggleLike={handleToggleLike}
-                    onOpenPlayer={() => setIsFullScreenOpen(true)}
-                    size="master"
-                    showControls={false}
-                    showTrackInfo={false}
-                  />
+              {/* Master Studio Console Grid: 3-Column Studio Layout on Desktop */}
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 lg:gap-6 items-stretch flex-1 min-h-0 py-1">
+                {/* Desktop Left Column (col-span-4): Live Karaoke & Lyrics */}
+                <div className="hidden lg:flex lg:col-span-4 flex-col bg-[#0e0e11] border border-zinc-800/80 rounded-2xl p-3 shadow-xl overflow-hidden min-h-[460px]">
+                  <div className="flex-1 min-h-0 overflow-hidden">
+                    <KaraokeLyricsBar
+                      currentTrack={currentTrack}
+                      currentTime={currentTime}
+                      duration={duration}
+                      isPlaying={isPlaying}
+                      onSeek={(s) => audioEngine.seek(s)}
+                      onUpdateSyncOffset={handleUpdateTrackSyncOffset}
+                      mode="stage"
+                      isLightMode={isLightMode}
+                    />
+                  </div>
                 </div>
 
-                {/* Right Column (6 Cols): Official Identification, Scrubber & Controls, Peak Analyzer, Karaoke */}
-                <div className="md:col-span-6 flex flex-col justify-center space-y-3">
+                {/* Center Column (lg:col-span-5): Turntable Platter, Controls & Peak Analyzer */}
+                <div className="col-span-1 lg:col-span-5 flex flex-col justify-between space-y-3">
+                  {/* Rotating Platter */}
+                  <div className="flex flex-col items-center justify-center py-1">
+                    <PixelTurntableWidget
+                      currentTrack={currentTrack}
+                      isPlaying={isPlaying}
+                      onPlayPause={handlePlayPause}
+                      onNext={handleNextTrack}
+                      onPrev={handlePrevTrack}
+                      onToggleLike={handleToggleLike}
+                      onOpenPlayer={() => setIsFullScreenOpen(true)}
+                      size="master"
+                      showControls={false}
+                      showTrackInfo={false}
+                    />
+                  </div>
+
                   {/* Single High-Fidelity Track & Official Album Identification */}
                   <div className="bg-[#0e0e11] border border-zinc-800/80 rounded-xl p-3 sm:p-3.5 relative overflow-hidden">
                     <div className="flex items-center justify-between gap-3">
@@ -1110,7 +1200,7 @@ export default function App() {
                     </div>
                   </div>
 
-                  {/* Real-time Peak Level Analyzer */}
+                  {/* Real-time Peak Level Analyzer (60 FPS, No Oscilloscope) */}
                   <div className="bg-[#0e0e11] border border-zinc-800/80 rounded-xl p-2.5 sm:p-3">
                     <div className="flex items-center justify-between text-[11px] font-mono text-zinc-400 mb-1">
                       <span className="flex items-center gap-1.5">
@@ -1129,23 +1219,8 @@ export default function App() {
                     </div>
                   </div>
 
-                  {/* Technical Acoustic Specs & Calibration Bar */}
-                  <div className="flex flex-wrap items-center justify-between gap-2 text-[10px] sm:text-[11px] font-mono text-zinc-400 px-1">
-                    <div className="flex items-center gap-2.5">
-                      <span>GENRE: {currentTrack?.genre || 'Audio'}</span>
-                      {currentTrack?.bpm && <span>{currentTrack.bpm} BPM</span>}
-                    </div>
-                    <button
-                      onClick={() => setIsEqOpen(true)}
-                      className="text-orange-400 hover:text-orange-300 hover:underline flex items-center gap-1"
-                    >
-                      <Sliders className="w-3 h-3" />
-                      <span>Launch 10-Band EQ</span>
-                    </button>
-                  </div>
-
-                  {/* Integrated Karaoke Style Lyrics Bar */}
-                  <div className="pt-1">
+                  {/* Mobile-Only Docked Lyrics Bar */}
+                  <div className="pt-1 lg:hidden">
                     <KaraokeLyricsBar
                       currentTrack={currentTrack}
                       currentTime={currentTime}
@@ -1155,7 +1230,53 @@ export default function App() {
                       onUpdateSyncOffset={handleUpdateTrackSyncOffset}
                       mode="docked"
                       onToggleStage={() => setIsFullScreenOpen(true)}
+                      isLightMode={isLightMode}
                     />
+                  </div>
+                </div>
+
+                {/* Desktop Right Column (col-span-3): Playback Queue (Up Next) */}
+                <div className="hidden lg:flex lg:col-span-3 flex-col bg-[#0e0e11] border border-zinc-800/80 rounded-2xl p-3.5 shadow-xl overflow-hidden min-h-[460px]">
+                  <div className="flex items-center justify-between pb-2.5 border-b border-zinc-800 shrink-0 mb-2">
+                    <span className="text-xs font-semibold text-zinc-200 flex items-center gap-1.5">
+                      <ListMusic className="w-3.5 h-3.5 text-orange-400" />
+                      Playback Queue
+                    </span>
+                    <span className="text-[10px] font-mono text-zinc-500">{queue.length} tracks</span>
+                  </div>
+                  <div className="flex-1 min-h-0 overflow-y-auto space-y-1 pr-1 custom-scrollbar">
+                    {queue.map((track) => (
+                      <div
+                        key={track.id}
+                        onClick={() => handleSelectTrack(track)}
+                        className={`flex items-center justify-between p-2 rounded-xl cursor-pointer transition ${
+                          currentTrack?.id === track.id
+                            ? 'bg-orange-500/15 border border-orange-500/30 text-orange-400'
+                            : 'hover:bg-zinc-800/80 text-zinc-300 hover:text-white border border-transparent'
+                        }`}
+                      >
+                        <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                          <div className="w-6 h-6 rounded-md bg-zinc-800 flex items-center justify-center shrink-0 text-zinc-400">
+                            {currentTrack?.id === track.id ? (
+                              <span className="text-orange-400 text-xs font-bold">▶</span>
+                            ) : (
+                              <Music className="w-3 h-3 text-zinc-500" />
+                            )}
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            <p className={`text-xs font-semibold truncate ${currentTrack?.id === track.id ? 'text-orange-400' : 'text-zinc-100'}`}>
+                              {track.title}
+                            </p>
+                            <p className="text-[10px] font-medium text-zinc-400 truncate">
+                              {track.artist}
+                            </p>
+                          </div>
+                        </div>
+                        <span className="text-[10px] font-mono text-zinc-500 shrink-0 ml-2">
+                          {formatTime(track.duration)}
+                        </span>
+                      </div>
+                    ))}
                   </div>
                 </div>
               </div>
@@ -1311,8 +1432,8 @@ export default function App() {
             {/* PRIMARY COLUMN: LIBRARY & TRACK LIST (7 Cols on desktop) */}
             <div className="lg:col-span-7 space-y-5">
             {/* Library Controls Bar */}
-            <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 bg-[#141418] border border-zinc-800 p-3.5 rounded-xl">
-              <div className="relative flex-1">
+            <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2.5 bg-[#141418] border border-zinc-800 p-3 sm:p-3.5 rounded-xl">
+              <div className="relative flex-1 min-w-0">
                 <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500" />
                 <input
                   type="text"
@@ -1323,20 +1444,20 @@ export default function App() {
                 />
               </div>
 
-              <div className="flex items-center gap-2">
+              {/* Action Buttons: Clean scrollable row on mobile without cutoff */}
+              <div className="flex items-center gap-2 overflow-x-auto no-scrollbar py-0.5 shrink-0">
                 <button
                   onClick={() => handleSyncCloudTracks(false)}
                   disabled={isSyncingWithCloud}
-                  className="px-3 py-1.5 rounded-lg bg-cyan-950/40 hover:bg-cyan-900/50 border border-cyan-800/60 text-xs font-semibold text-cyan-300 transition flex items-center gap-1.5 shadow-sm active:scale-95 whitespace-nowrap disabled:opacity-50"
+                  className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-cyan-950/40 hover:bg-cyan-900/50 border border-cyan-800/60 text-xs font-semibold text-cyan-300 transition shadow-sm active:scale-95 whitespace-nowrap disabled:opacity-50"
                   title="Check for audio uploaded from your laptop"
                 >
                   <RefreshCw className={`w-3.5 h-3.5 text-cyan-400 ${isSyncingWithCloud ? 'animate-spin' : ''}`} />
-                  <span className="hidden sm:inline">{isSyncingWithCloud ? 'Syncing...' : 'Sync Laptop'}</span>
-                  <span className="sm:hidden">{isSyncingWithCloud ? '...' : 'Sync'}</span>
+                  <span>{isSyncingWithCloud ? 'Syncing...' : 'Sync Laptop'}</span>
                 </button>
                 <button
                   onClick={() => setIsSmartPlaylistMakerOpen(true)}
-                  className="px-3 py-1.5 rounded-lg bg-orange-600/20 hover:bg-orange-600/30 border border-orange-500/40 text-xs font-semibold text-orange-300 transition flex items-center gap-1.5 shadow-sm active:scale-95 whitespace-nowrap"
+                  className="px-3 py-1.5 rounded-lg bg-orange-600/20 hover:bg-orange-600/30 border border-orange-500/40 text-xs font-semibold text-orange-300 transition flex items-center gap-1.5 shadow-sm active:scale-95 whitespace-nowrap shrink-0"
                   title="Make smart playlists by genre & international language analysis"
                 >
                   <Sparkles className="w-3.5 h-3.5 text-orange-400" />
@@ -1344,15 +1465,15 @@ export default function App() {
                 </button>
                 <button
                   onClick={() => setIsAiCuratorOpen(true)}
-                  className="px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-xs font-medium text-zinc-200 transition"
+                  className="px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-xs font-medium text-zinc-200 transition whitespace-nowrap shrink-0"
                 >
                   Mix Organizer
                 </button>
                 <button
                   onClick={handleToggleSmartShuffle}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-medium transition ${
+                  className={`px-3 py-1.5 rounded-lg text-xs font-medium transition whitespace-nowrap shrink-0 ${
                     isSmartShuffleActive
-                      ? 'bg-orange-600 text-white'
+                      ? 'bg-orange-600 text-white shadow-sm'
                       : 'bg-zinc-900 border border-zinc-800 text-zinc-400 hover:text-white'
                   }`}
                   title="Shuffle Playback"
@@ -1362,37 +1483,33 @@ export default function App() {
               </div>
             </div>
 
-            {/* Sub-tabs & Segmented Genre Filter */}
-            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-zinc-800 pb-2 text-xs">
-              <div className="flex items-center gap-2">
-                <span className="font-semibold text-zinc-200">
+            {/* Sub-tabs & Segmented Genre Filter: Clean, tight layout without gaps */}
+            <div className="flex flex-wrap items-center justify-between gap-2.5 border-b border-zinc-800/80 pb-2 text-xs">
+              <div className="flex items-center gap-2.5 min-w-0">
+                <span className="font-semibold text-zinc-100 text-xs">
                   Tracks ({filteredTracks.length})
-                </span>
-                <span className="text-zinc-600">·</span>
-                <span className="text-zinc-400 font-mono text-[11px]">
-                  {tracks.length} Total in Storage
                 </span>
                 <button
                   onClick={handleCleanMetadata}
                   disabled={isCleaningMetadata}
-                  className="ml-1.5 flex items-center gap-1 px-2.5 py-1 rounded-md bg-zinc-850 hover:bg-zinc-800 border border-zinc-700/80 text-[11px] font-medium text-orange-400 hover:text-orange-300 transition shadow-sm active:scale-95 disabled:opacity-50"
-                  title="Scan all songs, separate artists from titles, and strip numbers"
+                  className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-zinc-850 hover:bg-zinc-800 border border-zinc-700/60 text-[11px] font-medium text-orange-400 hover:text-orange-300 transition shadow-sm active:scale-95 disabled:opacity-50"
+                  title="Scan songs, separate artists from titles, and strip junk"
                 >
-                  <Wand2 className={`w-3.5 h-3.5 ${isCleaningMetadata ? 'animate-spin' : ''}`} />
-                  <span>{isCleaningMetadata ? 'Separating Artists...' : 'Clean Titles & Artists'}</span>
+                  <Wand2 className={`w-3 h-3 ${isCleaningMetadata ? 'animate-spin' : ''}`} />
+                  <span>{isCleaningMetadata ? 'Cleaning...' : 'Clean Titles'}</span>
                 </button>
               </div>
 
               {/* Clean Filter Links */}
-              <div className="flex items-center gap-1.5 overflow-x-auto">
-                {availableGenres.slice(0, 4).map((genre) => (
+              <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar">
+                {availableGenres.slice(0, 5).map((genre) => (
                   <button
                     key={genre}
                     onClick={() => setSelectedGenreFilter(genre)}
-                    className={`px-2 py-0.5 rounded text-[11px] transition ${
+                    className={`px-2.5 py-1 rounded-lg text-[11px] transition shrink-0 ${
                       selectedGenreFilter === genre
-                        ? 'bg-zinc-800 text-orange-400 font-semibold'
-                        : 'text-zinc-400 hover:text-zinc-200'
+                        ? 'bg-zinc-800 text-orange-400 font-semibold shadow-sm'
+                        : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-850'
                     }`}
                   >
                     {genre}
@@ -1589,15 +1706,6 @@ export default function App() {
                   <span>4kHz</span>
                   <span>16kHz</span>
                 </div>
-
-                {/* Oscilloscope Trace */}
-                <div className="mt-2.5 pt-2.5 border-t border-zinc-800/80">
-                  <div className="flex items-center justify-between text-[11px] font-mono text-zinc-400 mb-1">
-                    <span>OSCILLOSCOPE TRACE</span>
-                    <span className="text-[9px] text-zinc-500">ANALOG WAVEFORM</span>
-                  </div>
-                  <AudioVisualizer mode="waveform" height={30} isPlaying={isPlaying} />
-                </div>
               </div>
 
               {/* Technical Acoustic Specs Strip */}
@@ -1620,6 +1728,7 @@ export default function App() {
               onUpdateSyncOffset={handleUpdateTrackSyncOffset}
               mode="docked"
               onToggleStage={() => setIsFullScreenOpen(true)}
+              isLightMode={isLightMode}
             />
 
             {/* Quick Parametric Controls */}
@@ -1702,40 +1811,42 @@ export default function App() {
           smartShuffleRationale={smartShuffleRationale}
           isOfflineMode={preferences.offlineOnlyMode}
           hasBottomNav={true}
+          isLightMode={isLightMode}
         />
       )}
 
-      {/* Mobile Bottom Navigation Bar - Only shown when FullScreenPlayer is closed */}
+      {/* Mobile Bottom Navigation Bar - Glass-morphic, sleek, 3-tab layout */}
       {!isFullScreenOpen && (
-        <nav className="sm:hidden fixed bottom-0 left-0 right-0 z-40 bg-[#121216] border-t border-zinc-800 px-4 py-2 flex items-center justify-around text-[10px] font-medium text-zinc-400">
+        <nav className={`sm:hidden fixed bottom-0 left-0 right-0 z-40 backdrop-blur-xl border-t px-8 py-2.5 flex items-center justify-around text-[10px] font-medium transition ${
+          isLightMode
+            ? 'bg-white/85 border-slate-200 text-slate-600 shadow-[0_-8px_30px_rgba(0,0,0,0.08)]'
+            : 'bg-[#101014]/80 border-white/10 text-zinc-400 shadow-[0_-8px_30px_rgba(0,0,0,0.5)]'
+        }`}>
           <button
             onClick={() => setActiveNav('library')}
-            className={`flex flex-col items-center gap-1 ${
-              activeNav === 'library' ? 'text-orange-400' : 'hover:text-zinc-200'
+            className={`flex flex-col items-center gap-1 transition ${
+              activeNav === 'library'
+                ? (isLightMode ? 'text-orange-600 font-bold' : 'text-orange-400 font-semibold')
+                : (isLightMode ? 'hover:text-slate-900' : 'hover:text-zinc-200')
             }`}
           >
             <ListMusic className="w-4 h-4" />
             <span>Library</span>
           </button>
           <button
-            onClick={() => setActiveNav('deck')}
-            className={`flex flex-col items-center gap-1 ${
-              activeNav === 'deck' ? 'text-orange-400' : 'hover:text-zinc-200'
-            }`}
-          >
-            <Disc3 className="w-4 h-4" />
-            <span>Master Deck</span>
-          </button>
-          <button
             onClick={() => setIsEqOpen(true)}
-            className="flex flex-col items-center gap-1 hover:text-zinc-200"
+            className={`flex flex-col items-center gap-1 transition ${
+              isLightMode ? 'hover:text-slate-900' : 'hover:text-zinc-200'
+            }`}
           >
             <Sliders className="w-4 h-4" />
             <span>Equalizer</span>
           </button>
           <button
             onClick={() => setIsSettingsOpen(true)}
-            className="flex flex-col items-center gap-1 hover:text-zinc-200"
+            className={`flex flex-col items-center gap-1 transition ${
+              isLightMode ? 'hover:text-slate-900' : 'hover:text-zinc-200'
+            }`}
           >
             <Settings className="w-4 h-4" />
             <span>Settings</span>
@@ -1780,6 +1891,8 @@ export default function App() {
         }}
         onToggleOfflineCache={handleToggleOfflineCache}
         onUpdateSyncOffset={handleUpdateTrackSyncOffset}
+        isLightMode={isLightMode}
+        onToggleTheme={handleToggleTheme}
       />
 
       <EqualizerDrawer

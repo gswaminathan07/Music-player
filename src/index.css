@@ -8,10 +8,16 @@
     overflow-x: hidden;
     user-select: none;
     -webkit-tap-highlight-color: transparent;
+    transition: background-color 0.2s ease, color 0.2s ease;
+  }
+
+  body.light-theme {
+    background-color: #f8fafc;
+    color: #0f172a;
   }
 }
 
-/* Studio precision scrollbar */
+/* Studio precision scrollbar - Dark Mode */
 ::-webkit-scrollbar {
   width: 5px;
   height: 5px;
@@ -21,13 +27,25 @@
   background: #0c0c0e;
 }
 
+body.light-theme ::-webkit-scrollbar-track {
+  background: #f1f5f9;
+}
+
 ::-webkit-scrollbar-thumb {
   background: #27272a;
   border-radius: 4px;
 }
 
+body.light-theme ::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+}
+
 ::-webkit-scrollbar-thumb:hover {
   background: #3f3f46;
+}
+
+body.light-theme ::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
 }
 
 /* Mechanical range fader styling */

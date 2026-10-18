@@ -23,9 +23,11 @@ import {
   ListMusic,
   Headphones,
   HardDrive,
-  Music,
   Activity,
   Mic2,
+  Sun,
+  Moon,
+  Music,
 } from 'lucide-react';
 
 interface FullScreenPlayerProps {
@@ -53,6 +55,8 @@ interface FullScreenPlayerProps {
   onToggleRepeat: () => void;
   onToggleOfflineCache: (trackId: string) => void;
   onUpdateSyncOffset?: (trackId: string, offset: number) => void;
+  isLightMode?: boolean;
+  onToggleTheme?: () => void;
 }
 
 // Studio Analog VU Meter Dial Component with mechanical ballistic needle
@@ -164,12 +168,14 @@ export const FullScreenPlayer: React.FC<FullScreenPlayerProps> = ({
   repeatMode,
   onToggleRepeat,
   onUpdateSyncOffset,
+  isLightMode = false,
+  onToggleTheme,
 }) => {
   const [activeTab, setActiveTab] = useState<'deck' | 'meter' | 'lyrics' | 'specs' | 'queue'>('deck');
   const [volume, setVolume] = useState<number>(1);
   const [isMuted, setIsMuted] = useState(false);
 
-  // Live dynamic acoustic telemetry polled directly from AudioEngine
+  // Live dynamic acoustic telemetry polled directly from AudioEngine - 60-120 FPS native loop
   const [meterMetrics, setMeterMetrics] = useState({
     formattedDb: '-∞ dB',
     peakDb: -Infinity,
@@ -182,10 +188,14 @@ export const FullScreenPlayer: React.FC<FullScreenPlayerProps> = ({
       setMeterMetrics({ formattedDb: '-∞ dB', peakDb: -Infinity, leftLevel: 0, rightLevel: 0 });
       return;
     }
-    const timer = setInterval(() => {
+    let animId: number;
+    const updateLoop = () => {
+      // Native frame rate loop (60-120 FPS) for buttery smooth analog peak meter telemetry
       setMeterMetrics(audioEngine.getPeakLevelDb());
-    }, 75);
-    return () => clearInterval(timer);
+      animId = requestAnimationFrame(updateLoop);
+    };
+    animId = requestAnimationFrame(updateLoop);
+    return () => cancelAnimationFrame(animId);
   }, [isPlaying]);
 
   if (!isOpen || !currentTrack) return null;
@@ -200,34 +210,58 @@ export const FullScreenPlayer: React.FC<FullScreenPlayerProps> = ({
   const progressPercent = duration > 0 ? (currentTime / duration) * 100 : 0;
 
   return (
-    <div className="fixed inset-0 z-50 flex flex-col bg-[#0c0c0e] text-zinc-100 overflow-hidden select-none">
-      {/* Top Console Bar */}
-      <div className="flex items-center justify-between px-4 sm:px-8 py-3.5 border-b border-zinc-800 bg-[#121216]">
+    <div className={`fixed inset-0 z-50 flex flex-col overflow-hidden select-none ${
+      isLightMode ? 'bg-[#f8fafc] text-slate-900' : 'bg-[#0c0c0e] text-zinc-100'
+    }`}>
+      {/* Ultra-Slim Top Console Bar - Minimized, No redundant song title */}
+      <div className={`flex items-center justify-between px-3 sm:px-6 py-1.5 sm:py-2 border-b shrink-0 h-11 ${
+        isLightMode ? 'border-slate-200 bg-white' : 'border-zinc-800 bg-[#121216]'
+      }`}>
         <button
           onClick={onClose}
-          className="p-2 rounded-lg text-zinc-400 hover:text-white hover:bg-zinc-800 transition"
+          className={`p-1.5 rounded-lg transition ${
+            isLightMode
+              ? 'text-slate-500 hover:text-slate-900 hover:bg-slate-100'
+              : 'text-zinc-400 hover:text-white hover:bg-zinc-800'
+          }`}
           aria-label="Minimize Player"
+          title="Minimize Console"
         >
           <ChevronDown className="w-5 h-5" />
         </button>
 
-        {/* Studio Status & Header */}
-        <div className="text-center min-w-0 px-2 flex-1">
-          <span className="text-[11px] font-mono tracking-widest text-zinc-500 uppercase">
-            Master Console · {currentTrack.format || 'MP3'}
+        {/* Minimalist Studio Status Indicator */}
+        <div className="flex items-center gap-2">
+          <span className={`w-1.5 h-1.5 rounded-full ${isPlaying ? 'bg-orange-500 animate-pulse' : 'bg-zinc-400 dark:bg-zinc-600'}`} />
+          <span className={`text-[10px] sm:text-xs font-mono font-semibold tracking-wider uppercase ${
+            isLightMode ? 'text-slate-600' : 'text-zinc-400'
+          }`}>
+            MASTER CONSOLE · 33⅓ RPM
           </span>
-          <h3 className="text-sm font-semibold text-zinc-100 truncate max-w-xs sm:max-w-md mx-auto">
-            {currentTrack.title}
-          </h3>
-          <p className="text-xs font-medium text-orange-400/90 truncate max-w-xs sm:max-w-md mx-auto mt-0.5">
-            {currentTrack.artist}
-          </p>
         </div>
 
-        <div className="flex items-center gap-1.5">
+        <div className="flex items-center gap-1 sm:gap-1.5">
+          {onToggleTheme && (
+            <button
+              onClick={onToggleTheme}
+              className={`p-1.5 rounded-lg transition ${
+                isLightMode
+                  ? 'text-amber-700 hover:bg-amber-100'
+                  : 'text-zinc-400 hover:text-white hover:bg-zinc-800'
+              }`}
+              title={isLightMode ? 'Switch to Dark Studio' : 'Switch to High-Contrast Light Studio'}
+              aria-label="Toggle Theme"
+            >
+              {isLightMode ? <Sun className="w-4 h-4 text-amber-600" /> : <Moon className="w-4 h-4 text-blue-300" />}
+            </button>
+          )}
           <button
             onClick={onOpenEq}
-            className="p-2 rounded-lg text-zinc-400 hover:text-white hover:bg-zinc-800 transition"
+            className={`p-1.5 rounded-lg transition ${
+              isLightMode
+                ? 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+                : 'text-zinc-400 hover:text-white hover:bg-zinc-800'
+            }`}
             title="Equalizer"
             aria-label="Equalizer"
           >
@@ -235,7 +269,11 @@ export const FullScreenPlayer: React.FC<FullScreenPlayerProps> = ({
           </button>
           <button
             onClick={() => onOpenShare(currentTrack)}
-            className="p-2 rounded-lg text-zinc-400 hover:text-white hover:bg-zinc-800 transition"
+            className={`p-1.5 rounded-lg transition ${
+              isLightMode
+                ? 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+                : 'text-zinc-400 hover:text-white hover:bg-zinc-800'
+            }`}
             title="Share Track"
             aria-label="Share Track"
           >
@@ -244,12 +282,12 @@ export const FullScreenPlayer: React.FC<FullScreenPlayerProps> = ({
         </div>
       </div>
 
-      {/* Segmented View Switcher: 5-Column Responsive Grid with Karaoke */}
-      <div className="flex justify-center px-2 sm:px-4 py-2 border-b border-zinc-800/80 bg-[#0f0f13]">
-        <div className="w-full max-w-lg grid grid-cols-5 p-1 bg-zinc-900 border border-zinc-800 rounded-xl text-center gap-1">
+      {/* Segmented View Switcher: Mobile-Only compact selector (Hidden on desktop where all 3 columns are visible) */}
+      <div className="flex lg:hidden justify-center px-2 py-1 border-b border-zinc-800/80 bg-[#0f0f13] shrink-0">
+        <div className="w-full max-w-sm grid grid-cols-4 p-0.5 bg-zinc-900 border border-zinc-800 rounded-lg text-center gap-0.5">
           <button
             onClick={() => setActiveTab('deck')}
-            className={`py-1.5 px-1 rounded-lg text-xs font-medium transition truncate ${
+            className={`py-1 px-1 rounded-md text-[11px] font-medium transition truncate ${
               activeTab === 'deck'
                 ? 'bg-zinc-800 text-white shadow-sm font-semibold'
                 : 'text-zinc-400 hover:text-zinc-200'
@@ -259,18 +297,18 @@ export const FullScreenPlayer: React.FC<FullScreenPlayerProps> = ({
           </button>
           <button
             onClick={() => setActiveTab('lyrics')}
-            className={`py-1.5 px-1 rounded-lg text-xs font-medium transition truncate flex items-center justify-center gap-1 ${
+            className={`py-1 px-1 rounded-md text-[11px] font-medium transition truncate flex items-center justify-center gap-1 ${
               activeTab === 'lyrics'
                 ? 'bg-orange-500/20 text-orange-300 border border-orange-500/30 shadow-sm font-semibold'
                 : 'text-zinc-400 hover:text-orange-400'
             }`}
           >
             <Mic2 className="w-3 h-3 text-orange-400" />
-            <span>Karaoke</span>
+            <span>Lyrics</span>
           </button>
           <button
             onClick={() => setActiveTab('meter')}
-            className={`py-1.5 px-1 rounded-lg text-xs font-medium transition truncate ${
+            className={`py-1 px-1 rounded-md text-[11px] font-medium transition truncate ${
               activeTab === 'meter'
                 ? 'bg-zinc-800 text-white shadow-sm font-semibold'
                 : 'text-zinc-400 hover:text-zinc-200'
@@ -279,18 +317,8 @@ export const FullScreenPlayer: React.FC<FullScreenPlayerProps> = ({
             VU Meter
           </button>
           <button
-            onClick={() => setActiveTab('specs')}
-            className={`py-1.5 px-1 rounded-lg text-xs font-medium transition truncate ${
-              activeTab === 'specs'
-                ? 'bg-zinc-800 text-white shadow-sm font-semibold'
-                : 'text-zinc-400 hover:text-zinc-200'
-            }`}
-          >
-            <span className="hidden sm:inline">Acoustic </span>Specs
-          </button>
-          <button
             onClick={() => setActiveTab('queue')}
-            className={`py-1.5 px-1 rounded-lg text-xs font-medium transition truncate ${
+            className={`py-1 px-1 rounded-md text-[11px] font-medium transition truncate ${
               activeTab === 'queue'
                 ? 'bg-zinc-800 text-white shadow-sm font-semibold'
                 : 'text-zinc-400 hover:text-zinc-200'
@@ -302,49 +330,150 @@ export const FullScreenPlayer: React.FC<FullScreenPlayerProps> = ({
       </div>
 
       {/* Main Body Stage */}
-      <div className="flex-1 flex flex-col items-center justify-center p-3 sm:p-6 overflow-y-auto">
+      <div className="flex-1 flex flex-col items-center justify-between p-2 sm:p-3 overflow-hidden min-h-0">
         {activeTab === 'deck' && (
-          <div className="w-full max-w-lg flex flex-col items-center space-y-3 sm:space-y-4">
-            <PixelTurntableWidget
-              currentTrack={currentTrack}
-              isPlaying={isPlaying}
-              onToggleLike={onToggleLike}
-              size="master"
-              showControls={false}
-            />
-
-            {/* Precision Real-time Peak Level Analyzer (VU & Spectrum Bars) */}
-            <div className="w-full bg-[#141418] border border-zinc-800 p-3.5 rounded-2xl shadow-lg">
-              <div className="w-full flex items-center justify-between pb-1.5 border-b border-zinc-800/80 mb-2">
-                <span className="text-[11px] font-mono text-zinc-400 uppercase tracking-wider flex items-center gap-1.5">
-                  <span className={`w-1.5 h-1.5 rounded-full ${isPlaying ? 'bg-orange-500 animate-pulse' : 'bg-zinc-600'}`} />
-                  Peak Level Analyzer · VU
-                </span>
-                <span className="text-[11px] font-mono font-bold text-orange-400">
-                  {isPlaying ? meterMetrics.formattedDb : '-∞ dB'}
-                </span>
-              </div>
-              <AudioVisualizer mode="bars" height={36} isPlaying={isPlaying} className="w-full" />
-              <div className="w-full flex justify-between text-[9px] font-mono text-zinc-500 mt-1 px-0.5">
-                <span>32Hz</span>
-                <span>250Hz</span>
-                <span>1kHz</span>
-                <span>4kHz</span>
-                <span>16kHz</span>
+          <div className="w-full h-full flex-1 min-h-0 flex flex-col lg:grid lg:grid-cols-12 gap-3 lg:gap-5 items-stretch justify-between max-w-7xl mx-auto py-0.5">
+            {/* Desktop Left Column (col-span-4 / 33%): Pure Live Karaoke & Lyrics */}
+            <div className={`hidden lg:flex lg:col-span-4 h-full flex-col border rounded-2xl p-3 shadow-xl overflow-hidden min-h-0 ${
+              isLightMode ? 'bg-white border-slate-200 shadow-md text-slate-900' : 'bg-[#141418] border-zinc-800 text-zinc-100'
+            }`}>
+              <div className="flex-1 min-h-0 overflow-hidden">
+                <KaraokeLyricsBar
+                  currentTrack={currentTrack}
+                  currentTime={currentTime}
+                  duration={duration}
+                  isPlaying={isPlaying}
+                  onSeek={onSeek}
+                  onUpdateSyncOffset={onUpdateSyncOffset}
+                  mode="stage"
+                  isLightMode={isLightMode}
+                />
               </div>
             </div>
 
-            {/* Integrated Karaoke Style Lyrics Bar (Docked in Platter View) */}
-            <KaraokeLyricsBar
-              currentTrack={currentTrack}
-              currentTime={currentTime}
-              duration={duration}
-              isPlaying={isPlaying}
-              onSeek={onSeek}
-              onUpdateSyncOffset={onUpdateSyncOffset}
-              mode="docked"
-              onToggleStage={() => setActiveTab('lyrics')}
-            />
+            {/* Center Column (lg:col-span-4): Turntable Platter & 60 FPS Peak Level Analyzer */}
+            <div className="w-full max-w-md lg:max-w-none lg:col-span-4 flex flex-col items-center justify-between mx-auto flex-1 min-h-0 space-y-1 sm:space-y-2 py-0.5">
+              <div className="flex-1 flex items-center justify-center min-h-0 w-full overflow-hidden">
+                <PixelTurntableWidget
+                  currentTrack={currentTrack}
+                  isPlaying={isPlaying}
+                  onToggleLike={onToggleLike}
+                  size="master"
+                  showControls={false}
+                />
+              </div>
+
+              {/* Precision Real-time Peak Level Analyzer (VU & Spectrum Bars) - 60 FPS */}
+              <div className={`w-full border p-1.5 sm:p-2.5 rounded-xl shadow-lg shrink-0 ${
+                isLightMode ? 'bg-white border-slate-200' : 'bg-[#141418] border-zinc-800'
+              }`}>
+                <div className={`w-full flex items-center justify-between pb-1 border-b mb-1 ${
+                  isLightMode ? 'border-slate-200' : 'border-zinc-800/80'
+                }`}>
+                  <span className={`text-[10px] sm:text-[11px] font-mono uppercase tracking-wider flex items-center gap-1.5 ${
+                    isLightMode ? 'text-slate-600' : 'text-zinc-400'
+                  }`}>
+                    <span className={`w-1.5 h-1.5 rounded-full ${isPlaying ? 'bg-orange-500 animate-pulse' : 'bg-zinc-400'}`} />
+                    Peak Level Analyzer · VU
+                  </span>
+                  <span className="text-[10px] sm:text-[11px] font-mono font-bold text-orange-500">
+                    {isPlaying ? meterMetrics.formattedDb : '-∞ dB'}
+                  </span>
+                </div>
+                <AudioVisualizer mode="bars" height={22} isPlaying={isPlaying} className="w-full" />
+                <div className={`w-full flex justify-between text-[8px] sm:text-[9px] font-mono mt-0.5 px-0.5 ${
+                  isLightMode ? 'text-slate-500' : 'text-zinc-500'
+                }`}>
+                  <span>32Hz</span>
+                  <span>250Hz</span>
+                  <span>1kHz</span>
+                  <span>4kHz</span>
+                  <span>16kHz</span>
+                </div>
+              </div>
+
+              {/* Mobile-Only: Docked lyrics bar (on desktop it is shown fully in the left column) */}
+              <div className="w-full shrink-0 lg:hidden">
+                <KaraokeLyricsBar
+                  currentTrack={currentTrack}
+                  currentTime={currentTime}
+                  duration={duration}
+                  isPlaying={isPlaying}
+                  onSeek={onSeek}
+                  onUpdateSyncOffset={onUpdateSyncOffset}
+                  mode="docked"
+                  onToggleStage={() => setActiveTab('lyrics')}
+                  isLightMode={isLightMode}
+                />
+              </div>
+            </div>
+
+            {/* Desktop Right Column (col-span-4 / 33%): Playback Queue (Up Next) */}
+            <div className={`hidden lg:flex lg:col-span-4 h-full flex-col border rounded-2xl p-3.5 shadow-xl overflow-hidden min-h-0 ${
+              isLightMode ? 'bg-white border-slate-200 text-slate-900 shadow-md' : 'bg-[#141418] border-zinc-800 text-zinc-100'
+            }`}>
+              <div className={`flex items-center justify-between pb-2.5 border-b shrink-0 mb-2 ${
+                isLightMode ? 'border-slate-200' : 'border-zinc-800'
+              }`}>
+                <span className={`text-xs font-semibold flex items-center gap-1.5 ${
+                  isLightMode ? 'text-slate-900' : 'text-zinc-200'
+                }`}>
+                  <ListMusic className="w-3.5 h-3.5 text-orange-500" />
+                  Playback Queue
+                </span>
+                <span className={`text-[10px] font-mono ${isLightMode ? 'text-slate-500' : 'text-zinc-500'}`}>
+                  {queue.length} tracks
+                </span>
+              </div>
+              <div className="flex-1 min-h-0 overflow-y-auto space-y-1 pr-1 custom-scrollbar">
+                {queue.map((track) => (
+                  <div
+                    key={track.id}
+                    onClick={() => onSelectQueueTrack(track)}
+                    className={`flex items-center justify-between p-2 rounded-xl cursor-pointer transition ${
+                      currentTrack.id === track.id
+                        ? isLightMode
+                          ? 'bg-orange-50 border border-orange-300 text-orange-600'
+                          : 'bg-orange-500/15 border border-orange-500/30 text-orange-400'
+                        : isLightMode
+                        ? 'hover:bg-slate-100 text-slate-700 hover:text-slate-900 border border-transparent'
+                        : 'hover:bg-zinc-800/80 text-zinc-300 hover:text-white border border-transparent'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                      <div className={`w-6 h-6 rounded-md flex items-center justify-center shrink-0 ${
+                        isLightMode ? 'bg-slate-100 text-slate-600' : 'bg-zinc-800 text-zinc-400'
+                      }`}>
+                        {currentTrack.id === track.id ? (
+                          <span className="text-orange-500 text-xs font-bold">▶</span>
+                        ) : (
+                          <Music className={`w-3 h-3 ${isLightMode ? 'text-slate-400' : 'text-zinc-500'}`} />
+                        )}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <p className={`text-xs font-semibold truncate ${
+                          currentTrack.id === track.id
+                            ? 'text-orange-500 font-bold'
+                            : isLightMode ? 'text-slate-900' : 'text-zinc-100'
+                        }`}>
+                          {track.title}
+                        </p>
+                        <p className={`text-[10px] font-medium truncate ${
+                          isLightMode ? 'text-slate-500' : 'text-zinc-400'
+                        }`}>
+                          {track.artist}
+                        </p>
+                      </div>
+                    </div>
+                    <span className={`text-[10px] font-mono shrink-0 ml-2 ${
+                      isLightMode ? 'text-slate-500' : 'text-zinc-500'
+                    }`}>
+                      {formatTime(track.duration)}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
           </div>
         )}
 
@@ -360,6 +489,7 @@ export const FullScreenPlayer: React.FC<FullScreenPlayerProps> = ({
               onUpdateSyncOffset={onUpdateSyncOffset}
               mode="stage"
               onToggleStage={() => setActiveTab('deck')}
+              isLightMode={isLightMode}
             />
           </div>
         )}
@@ -507,48 +637,62 @@ export const FullScreenPlayer: React.FC<FullScreenPlayerProps> = ({
       </div>
 
       {/* Bottom Transport Console */}
-      <div className="p-4 sm:p-6 bg-[#121216] border-t border-zinc-800">
-        <div className="max-w-2xl mx-auto space-y-4">
+      <div className={`p-2.5 sm:p-4 border-t shrink-0 ${
+        isLightMode ? 'bg-white border-slate-200 shadow-lg' : 'bg-[#121216] border-zinc-800'
+      }`}>
+        <div className="max-w-2xl mx-auto space-y-2 sm:space-y-3">
           {/* Now Playing Title & Artist with Like Toggle */}
           <div className="flex items-center justify-between gap-3">
             <div className="min-w-0">
-              <h4 className="text-base font-bold text-zinc-100 truncate tracking-tight">
+              <h4 className={`text-sm sm:text-base font-bold truncate tracking-tight ${
+                isLightMode ? 'text-slate-900' : 'text-zinc-100'
+              }`}>
                 {currentTrack.title}
               </h4>
-              <p className="text-xs font-medium text-orange-400/90 truncate mt-0.5">
+              <p className={`text-[11px] sm:text-xs font-semibold truncate mt-0.5 ${
+                isLightMode ? 'text-orange-600' : 'text-orange-400/90'
+              }`}>
                 {currentTrack.artist} {currentTrack.album ? `· ${currentTrack.album}` : ''}
               </p>
             </div>
             <button
               onClick={() => onToggleLike(currentTrack.id)}
-              className={`p-2 rounded-xl transition ${
+              className={`p-1.5 sm:p-2 rounded-xl transition ${
                 currentTrack.liked
-                  ? 'text-orange-500 bg-orange-500/10'
+                  ? isLightMode
+                    ? 'text-orange-600 bg-orange-50'
+                    : 'text-orange-500 bg-orange-500/10'
+                  : isLightMode
+                  ? 'text-slate-400 hover:text-slate-700 hover:bg-slate-100'
                   : 'text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800'
               }`}
               title="Like Track"
               aria-label="Like Track"
             >
-              <Heart className="w-5 h-5 fill-current" />
+              <Heart className="w-4 h-4 sm:w-5 sm:h-5 fill-current" />
             </button>
           </div>
 
           {/* Scrubber Bar */}
-          <div className="space-y-1.5">
+          <div className="space-y-1">
             <div
               onClick={(e) => {
                 const rect = e.currentTarget.getBoundingClientRect();
                 const pos = (e.clientX - rect.left) / rect.width;
                 onSeek(pos * duration);
               }}
-              className="relative h-2 bg-zinc-800 hover:bg-zinc-700/80 rounded-full cursor-pointer transition-colors overflow-hidden"
+              className={`relative h-1.5 sm:h-2 rounded-full cursor-pointer transition-colors overflow-hidden ${
+                isLightMode ? 'bg-slate-200 hover:bg-slate-300' : 'bg-zinc-800 hover:bg-zinc-700/80'
+              }`}
             >
               <div
                 className="h-full bg-orange-500 rounded-full"
                 style={{ width: `${Math.min(100, Math.max(0, progressPercent))}%` }}
               />
             </div>
-            <div className="flex justify-between text-xs font-mono text-zinc-400 tabular-nums">
+            <div className={`flex justify-between text-[10px] sm:text-xs font-mono tabular-nums ${
+              isLightMode ? 'text-slate-500' : 'text-zinc-400'
+            }`}>
               <span>{formatTime(currentTime)}</span>
               <span>{formatTime(duration)}</span>
             </div>
@@ -558,43 +702,51 @@ export const FullScreenPlayer: React.FC<FullScreenPlayerProps> = ({
           <div className="flex items-center justify-between">
             <button
               onClick={onToggleSmartShuffle}
-              className={`p-2.5 rounded-lg transition ${
+              className={`p-2 rounded-lg transition ${
                 isSmartShuffleActive
-                  ? 'text-orange-400 bg-orange-500/10'
-                  : 'text-zinc-500 hover:text-zinc-300'
+                  ? isLightMode ? 'text-orange-600 bg-orange-50' : 'text-orange-400 bg-orange-500/10'
+                  : isLightMode ? 'text-slate-400 hover:text-slate-700' : 'text-zinc-500 hover:text-zinc-300'
               }`}
               title="Shuffle Queue"
               aria-label="Shuffle Queue"
             >
-              <Shuffle className="w-5 h-5" />
+              <Shuffle className="w-4 h-4 sm:w-5 sm:h-5" />
             </button>
 
             <div className="flex items-center gap-3 sm:gap-5">
               <button
                 onClick={onPrev}
-                className="p-2.5 rounded-lg text-zinc-300 hover:text-white hover:bg-zinc-800 transition active:scale-95"
+                className={`p-2 rounded-lg transition active:scale-95 ${
+                  isLightMode
+                    ? 'text-slate-700 hover:text-slate-950 hover:bg-slate-100'
+                    : 'text-zinc-300 hover:text-white hover:bg-zinc-800'
+                }`}
                 title="Previous Track"
                 aria-label="Previous Track"
               >
-                <SkipBack className="w-6 h-6" />
+                <SkipBack className="w-5 h-5 sm:w-6 sm:h-6" />
               </button>
 
               <button
                 onClick={onPlayPause}
-                className="w-14 h-14 rounded-2xl bg-orange-600 hover:bg-orange-500 text-white flex items-center justify-center transition active:scale-95 shadow-lg shadow-orange-600/20"
+                className="w-12 h-12 sm:w-14 sm:h-14 rounded-2xl bg-orange-600 hover:bg-orange-500 text-white flex items-center justify-center transition active:scale-95 shadow-lg shadow-orange-600/25"
                 title={isPlaying ? 'Pause' : 'Play'}
                 aria-label={isPlaying ? 'Pause' : 'Play'}
               >
                 {isPlaying ? (
-                  <Pause className="w-7 h-7 fill-current" />
+                  <Pause className="w-6 h-6 sm:w-7 sm:h-7 fill-current" />
                 ) : (
-                  <Play className="w-7 h-7 fill-current ml-0.5" />
+                  <Play className="w-6 h-6 sm:w-7 sm:h-7 fill-current ml-0.5" />
                 )}
               </button>
 
               <button
                 onClick={onNext}
-                className="p-2.5 rounded-lg text-zinc-300 hover:text-white hover:bg-zinc-800 transition active:scale-95"
+                className={`p-2.5 rounded-lg transition active:scale-95 ${
+                  isLightMode
+                    ? 'text-slate-700 hover:text-slate-950 hover:bg-slate-100'
+                    : 'text-zinc-300 hover:text-white hover:bg-zinc-800'
+                }`}
                 title="Next Track"
                 aria-label="Next Track"
               >
@@ -606,8 +758,8 @@ export const FullScreenPlayer: React.FC<FullScreenPlayerProps> = ({
               onClick={onToggleRepeat}
               className={`p-2.5 rounded-lg transition ${
                 repeatMode !== 'off'
-                  ? 'text-orange-400 bg-orange-500/10'
-                  : 'text-zinc-500 hover:text-zinc-300'
+                  ? isLightMode ? 'text-orange-600 bg-orange-50' : 'text-orange-400 bg-orange-500/10'
+                  : isLightMode ? 'text-slate-400 hover:text-slate-700' : 'text-zinc-500 hover:text-zinc-300'
               }`}
               title={`Repeat: ${repeatMode}`}
               aria-label={`Repeat: ${repeatMode}`}

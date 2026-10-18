@@ -145,8 +145,8 @@ export const AiCuratorModal: React.FC<AiCuratorModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 select-none">
-      <div className="relative w-full max-w-2xl bg-[#141418] border border-zinc-800 rounded-2xl shadow-2xl p-6 max-h-[90vh] overflow-y-auto">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-md select-none animate-fade-in">
+      <div className="relative w-full max-w-2xl bg-[#141418]/90 backdrop-blur-2xl border border-white/10 rounded-2xl shadow-2xl p-6 max-h-[90vh] overflow-y-auto">
         {/* Header */}
         <div className="flex items-center justify-between border-b border-zinc-800 pb-4 mb-5">
           <div>

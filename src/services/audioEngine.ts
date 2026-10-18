@@ -572,7 +572,7 @@ class AudioEngine {
       this.preampGain = this.audioCtx.createGain();
       this.analyser = this.audioCtx.createAnalyser();
       this.analyser.fftSize = 256;
-      this.analyser.smoothingTimeConstant = 0.8;
+      this.analyser.smoothingTimeConstant = 0.55;
 
       // 10 Biquad Filters for EQ
       this.filters = EQ_FREQUENCIES.map((freq, index) => {
@@ -862,8 +862,11 @@ class AudioEngine {
       return { frequencyData, waveformData };
     }
 
-    const currTime = this.audioElement.currentTime || 0;
-    // Rhythmic acoustic pulse derived from playback timeline
+    // Continuous time calculation anchored to high-resolution performance clock for ultra-smooth 60/120 FPS
+    const baseTime = this.audioElement.currentTime || 0;
+    const nowSecs = (performance.now() / 1000);
+    const currTime = baseTime + (nowSecs % 0.25);
+    // Rhythmic acoustic pulse derived from continuous playback timeline
     const beatPhase = (currTime * 2.2) % 1; // ~132 BPM musical pulse
     const beatPulse = Math.pow(1 - beatPhase, 2) * 45;
 
@@ -883,6 +886,13 @@ class AudioEngine {
     }
 
     return { frequencyData, waveformData };
+  }
+
+  /**
+   * High-precision current playback position in seconds (polled directly from audio hardware)
+   */
+  public getPreciseTime(): number {
+    return this.audioElement.currentTime || 0;
   }
 
   public getPeakLevelDb(): {

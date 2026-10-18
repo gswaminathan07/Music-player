@@ -79,8 +79,8 @@ export const EqualizerDrawer: React.FC<EqualizerDrawerProps> = ({
   const formatFreq = (f: number) => (f >= 1000 ? `${f / 1000}k` : `${f}`);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4 bg-black/80 select-none">
-      <div className="relative w-full max-w-2xl bg-[#141418] border border-zinc-800 rounded-t-3xl sm:rounded-2xl shadow-2xl p-5 sm:p-6 max-h-[92vh] overflow-y-auto">
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4 bg-black/70 backdrop-blur-md select-none animate-fade-in">
+      <div className="relative w-full max-w-2xl bg-[#141418]/90 backdrop-blur-2xl border-t sm:border border-white/10 rounded-t-3xl sm:rounded-2xl shadow-2xl p-5 sm:p-6 max-h-[92vh] overflow-y-auto">
         {/* Rack Header */}
         <div className="flex items-center justify-between border-b border-zinc-800 pb-4 mb-5">
           <div>

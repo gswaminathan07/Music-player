@@ -59,8 +59,8 @@ export const SocialShareModal: React.FC<SocialShareModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-fade-in">
-      <div className="relative w-full max-w-lg bg-zinc-900 border border-zinc-800 rounded-3xl shadow-2xl p-6 overflow-hidden">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-md animate-fade-in">
+      <div className="relative w-full max-w-lg bg-[#141418]/90 backdrop-blur-2xl border border-white/10 rounded-3xl shadow-2xl p-6 overflow-hidden">
         {/* Header */}
         <div className="flex items-center justify-between border-b border-zinc-800 pb-4 mb-5">
           <div className="flex items-center gap-3">

@@ -30,6 +30,7 @@ interface MiniPlayerProps {
   smartShuffleRationale?: string;
   isOfflineMode: boolean;
   hasBottomNav?: boolean;
+  isLightMode?: boolean;
 }
 
 export const MiniPlayer: React.FC<MiniPlayerProps> = ({
@@ -45,6 +46,7 @@ export const MiniPlayer: React.FC<MiniPlayerProps> = ({
   onOpenEq,
   onSeek,
   hasBottomNav = true,
+  isLightMode = false,
 }) => {
   const [lyricsData, setLyricsData] = useState<SongLyricsData | null>(null);
 
@@ -66,7 +68,11 @@ export const MiniPlayer: React.FC<MiniPlayerProps> = ({
       }`}
     >
       <div className="max-w-4xl mx-auto pointer-events-auto">
-        <div className="relative bg-[#141418] border border-zinc-800 rounded-2xl shadow-xl overflow-hidden">
+        <div className={`relative backdrop-blur-xl border rounded-2xl shadow-2xl overflow-hidden transition-colors ${
+          isLightMode
+            ? 'bg-white/95 border-slate-200 text-slate-900 shadow-slate-300/40'
+            : 'bg-[#121217]/85 border-white/10 text-zinc-100'
+        }`}>
           {/* Top linear progress bar in studio amber */}
           <div className="absolute top-0 left-0 right-0 h-[2px] bg-zinc-800 overflow-hidden">
             <div
@@ -105,7 +111,9 @@ export const MiniPlayer: React.FC<MiniPlayerProps> = ({
 
               {/* Title & Artist & Live Karaoke Line */}
               <div className="min-w-0 flex-1">
-                <h4 className="text-sm font-semibold text-zinc-100 truncate group-hover:text-orange-400 transition tracking-tight">
+                <h4 className={`text-sm font-semibold truncate group-hover:text-orange-500 transition tracking-tight ${
+                  isLightMode ? 'text-slate-900' : 'text-zinc-100'
+                }`}>
                   {currentTrack.title}
                 </h4>
                 

@@ -171,8 +171,8 @@ export const SmartPlaylistMakerModal: React.FC<SmartPlaylistMakerModalProps> = (
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-5 bg-black/85 backdrop-blur-md animate-in fade-in select-none">
-      <div className="bg-[#121216] border border-zinc-800 w-full max-w-4xl max-h-[92vh] rounded-2xl sm:rounded-3xl shadow-2xl flex flex-col overflow-hidden text-zinc-100">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-5 bg-black/70 backdrop-blur-md animate-in fade-in select-none">
+      <div className="bg-[#121216]/90 backdrop-blur-2xl border border-white/10 w-full max-w-4xl max-h-[92vh] rounded-2xl sm:rounded-3xl shadow-2xl flex flex-col overflow-hidden text-zinc-100">
         {/* Header */}
         <div className="px-5 py-4 border-b border-zinc-800 flex items-center justify-between shrink-0 bg-[#16161b]">
           <div className="flex items-center gap-3">
