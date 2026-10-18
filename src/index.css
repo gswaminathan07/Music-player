@@ -1,0 +1,94 @@
+@import "tailwindcss";
+
+@layer base {
+  body {
+    font-family: 'Plus Jakarta Sans', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background-color: #0c0c0e;
+    color: #f4f4f5;
+    overflow-x: hidden;
+    user-select: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+}
+
+/* Studio precision scrollbar */
+::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+
+::-webkit-scrollbar-track {
+  background: #0c0c0e;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #27272a;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #3f3f46;
+}
+
+/* Mechanical range fader styling */
+input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  background: #27272a;
+  border-radius: 4px;
+  outline: none;
+  height: 4px;
+}
+
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #f97316;
+  border: 2px solid #ffffff;
+  cursor: pointer;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.6);
+  transition: transform 0.1s ease;
+}
+
+input[type="range"]::-webkit-slider-thumb:hover {
+  transform: scale(1.15);
+}
+
+/* Studio vertical fader for 10-band equalizer */
+.slider-vertical {
+  writing-mode: vertical-lr;
+  direction: rtl;
+  vertical-align: bottom;
+  width: 6px;
+}
+
+/* Mechanical 33 RPM Turntable Continuous Rotation */
+@keyframes spinTurntable {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.animate-spin-turntable {
+  animation: spinTurntable 9s linear infinite;
+}
+
+.turntable-platter {
+  animation: spinTurntable 9s linear infinite;
+  will-change: transform;
+}
+
+.turntable-platter.is-playing {
+  animation-play-state: running;
+}
+
+.turntable-platter.is-paused {
+  animation-play-state: paused;
+}
+

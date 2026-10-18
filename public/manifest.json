@@ -1,0 +1,136 @@
+{
+  "id": "/",
+  "name": "Vettify · Studio Audio Player",
+  "short_name": "Vettify",
+  "description": "High-fidelity audio player with 10-band parametric equalizer, full background playback, offline device storage, and local file playback.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "display_override": [
+    "window-controls-overlay",
+    "standalone",
+    "minimal-ui"
+  ],
+  "orientation": "any",
+  "categories": [
+    "music",
+    "audio",
+    "entertainment",
+    "utilities"
+  ],
+  "theme_color": "#0c0c0e",
+  "background_color": "#0c0c0e",
+  "handle_links": "preferred",
+  "launch_handler": {
+    "client_mode": [
+      "navigate-existing",
+      "auto"
+    ]
+  },
+  "shortcuts": [
+    {
+      "name": "Resume Playback",
+      "short_name": "Play",
+      "description": "Continue listening to your queued track",
+      "url": "/?action=play",
+      "icons": [
+        {
+          "src": "/pwa-192.png",
+          "sizes": "192x192",
+          "type": "image/png"
+        }
+      ]
+    },
+    {
+      "name": "Studio Equalizer",
+      "short_name": "Equalizer",
+      "description": "Adjust 10-band studio frequency curves",
+      "url": "/?action=eq",
+      "icons": [
+        {
+          "src": "/pwa-192.png",
+          "sizes": "192x192",
+          "type": "image/png"
+        }
+      ]
+    },
+    {
+      "name": "Offline Library",
+      "short_name": "Library",
+      "description": "View stored audio files and offline songs",
+      "url": "/?action=library",
+      "icons": [
+        {
+          "src": "/pwa-192.png",
+          "sizes": "192x192",
+          "type": "image/png"
+        }
+      ]
+    }
+  ],
+  "file_handlers": [
+    {
+      "action": "/",
+      "name": "Audio files",
+      "accept": {
+        "audio/mpeg": [".mp3"],
+        "audio/mp3": [".mp3"],
+        "audio/wav": [".wav"],
+        "audio/ogg": [".ogg"],
+        "audio/flac": [".flac"],
+        "audio/x-m4a": [".m4a"],
+        "audio/aac": [".aac"],
+        "audio/webm": [".weba"]
+      }
+    }
+  ],
+  "share_target": {
+    "action": "/?action=share",
+    "method": "POST",
+    "enctype": "multipart/form-data",
+    "params": {
+      "title": "title",
+      "text": "text",
+      "files": [
+        {
+          "name": "audio",
+          "accept": [
+            "audio/*",
+            ".mp3",
+            ".wav",
+            ".ogg",
+            ".flac",
+            ".m4a",
+            ".aac"
+          ]
+        }
+      ]
+    }
+  },
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "/pwa-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/pwa-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/pwa-maskable.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}

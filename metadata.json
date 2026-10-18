@@ -1,0 +1,6 @@
+{
+  "name": "Vettify - Studio Audio Player & Smart Curator",
+  "description": "Music player with AI-powered playlist curation, mood-based smart shuffle, offline MP3 playback, and social playlist discovery.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
