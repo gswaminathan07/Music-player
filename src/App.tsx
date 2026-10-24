@@ -32,6 +32,7 @@ import { PixelTurntableWidget } from './components/PixelTurntableWidget';
 import { SettingsModal } from './components/SettingsModal';
 import { SmartPlaylistMakerModal } from './components/SmartPlaylistMakerModal';
 import { KaraokeLyricsBar } from './components/KaraokeLyricsBar';
+import { PWAInstallPrompt } from './components/PWAInstallPrompt';
 import {
   Play,
   Pause,
@@ -62,10 +63,100 @@ import {
   Mic2,
   Sun,
   Moon,
+  Eye,
+  EyeOff,
+  Trash2,
 } from 'lucide-react';
 import { sanitizeTrack } from './utils/trackFormatter';
 import { readAudioTags } from './services/audioTagReader';
-import { fetchCoverArtForTrack, identifyTrackOnline } from './services/coverArtService';
+import { fetchCoverArtForTrack, identifyTrackOnline, getHighQualityCoverUrl } from './services/coverArtService';
+
+export function deduplicateAndPurgeTracks(allTracks: Track[]): Track[] {
+  if (!allTracks || allTracks.length === 0) return [];
+
+  // If there are real uploaded/cloud tracks (non-demo), purge all default demo tracks
+  const nonDemoTracks = allTracks.filter((t) => !t.id.startsWith('track-v'));
+  const candidates = nonDemoTracks.length > 0 ? nonDemoTracks : allTracks;
+
+  const seenMap = new Map<string, Track>();
+
+  for (const track of candidates) {
+    const norm = (s?: string) => (s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+    const titleKey = norm(track.title);
+    const artistKey = norm(track.artist);
+
+    const isGenericTitle =
+      !titleKey ||
+      titleKey === 'audiotrack' ||
+      titleKey === 'untitledtrack' ||
+      titleKey === 'track' ||
+      titleKey === 'localartist' ||
+      titleKey === 'unknown';
+
+    // Composite key using title, artist, and file size to preserve distinct uploads
+    const dedupKey = !isGenericTitle && titleKey.length > 2
+      ? `${titleKey}::${artistKey}::${track.fileSize || 0}`
+      : track.blobId || track.id;
+
+    if (!seenMap.has(dedupKey)) {
+      seenMap.set(dedupKey, {
+        ...track,
+        isLocal: Boolean(track.isLocal || track.blobId || track.audioUrl?.startsWith('blob:')),
+        isOfflineAvailable: Boolean(track.isOfflineAvailable || track.isLocal || track.blobId || track.audioUrl?.startsWith('blob:')),
+      });
+    } else {
+      const existing = seenMap.get(dedupKey)!;
+      // Merge best attributes: prefer cloud URL and cloud status, keep blobId for offline
+      const preferIncoming =
+        (!existing.isCloudSynced && track.isCloudSynced) ||
+        (!existing.audioUrl?.startsWith('/api/audio/') && track.audioUrl?.startsWith('/api/audio/'));
+
+      const base = preferIncoming ? track : existing;
+      const other = preferIncoming ? existing : track;
+
+      const merged: Track = {
+        ...base,
+        isLocal: Boolean(base.isLocal || other.isLocal || base.blobId || other.blobId || base.audioUrl?.startsWith('blob:') || other.audioUrl?.startsWith('blob:')),
+        isOfflineAvailable: Boolean(
+          base.isOfflineAvailable ||
+          other.isOfflineAvailable ||
+          base.isLocal ||
+          other.isLocal ||
+          base.blobId ||
+          other.blobId ||
+          base.audioUrl?.startsWith('blob:') ||
+          other.audioUrl?.startsWith('blob:')
+        ),
+        isCloudSynced:
+          Boolean(base.isCloudSynced) ||
+          Boolean(other.isCloudSynced) ||
+          Boolean(base.audioUrl?.startsWith('/api/audio/')) ||
+          Boolean(other.audioUrl?.startsWith('/api/audio/')),
+        audioUrl:
+          base.audioUrl &&
+          (base.audioUrl.startsWith('/api/audio/') ||
+            base.audioUrl.startsWith('blob:') ||
+            base.audioUrl.startsWith('http'))
+            ? base.audioUrl
+            : other.audioUrl || base.audioUrl,
+        blobId: base.blobId || other.blobId,
+        coverUrl: base.coverUrl || other.coverUrl,
+        album:
+          base.album && base.album !== 'Device Music'
+            ? base.album
+            : other.album || base.album,
+        genre:
+          base.genre && base.genre !== 'Audio'
+            ? base.genre
+            : other.genre || base.genre,
+      };
+
+      seenMap.set(dedupKey, merged);
+    }
+  }
+
+  return Array.from(seenMap.values());
+}
 
 export default function App() {
   // App Core State
@@ -106,12 +197,14 @@ export default function App() {
   const currentTrackRef = React.useRef<Track | null>(currentTrack);
   const queueRef = React.useRef<Track[]>(queue);
   const tracksRef = React.useRef<Track[]>(tracks);
+  const playlistsRef = React.useRef<Playlist[]>(playlists);
   const repeatModeRef = React.useRef(repeatMode);
   const isSmartShuffleActiveRef = React.useRef(isSmartShuffleActive);
 
   currentTrackRef.current = currentTrack;
   queueRef.current = queue;
   tracksRef.current = tracks;
+  playlistsRef.current = playlists;
   repeatModeRef.current = repeatMode;
   isSmartShuffleActiveRef.current = isSmartShuffleActive;
 
@@ -133,12 +226,16 @@ export default function App() {
   }, [isPlaying]);
 
   // Studio Theme & Accessibility
-  const isLightMode = preferences.theme === 'light';
+  const isLightMode = (preferences?.theme || INITIAL_PREFERENCES.theme) === 'light';
 
   useEffect(() => {
-    const storedTheme = typeof window !== 'undefined' ? localStorage.getItem('vettify_theme') : null;
-    if (storedTheme && (storedTheme === 'light' || storedTheme === 'dark-oled')) {
-      setPreferences((prev) => ({ ...prev, theme: storedTheme as any }));
+    try {
+      const storedTheme = typeof window !== 'undefined' ? localStorage.getItem('vettify_theme') : null;
+      if (storedTheme && (storedTheme === 'light' || storedTheme === 'dark-oled')) {
+        setPreferences((prev) => ({ ...prev, theme: storedTheme as any }));
+      }
+    } catch {
+      // Ignore localStorage restrictions in private/webview mode
     }
   }, []);
 
@@ -150,12 +247,18 @@ export default function App() {
 
   const handleToggleTheme = () => {
     const nextTheme: UserPreferences['theme'] = isLightMode ? 'dark-oled' : 'light';
-    const newPrefs: UserPreferences = { ...preferences, theme: nextTheme };
+    const newPrefs: UserPreferences = {
+      ...INITIAL_PREFERENCES,
+      ...preferences,
+      theme: nextTheme,
+    };
     setPreferences(newPrefs);
-    offlineStorage.setKV('user_preferences', newPrefs);
-    if (typeof window !== 'undefined') {
-      localStorage.setItem('vettify_theme', nextTheme);
-    }
+    offlineStorage.setKV('user_preferences', newPrefs).catch(() => {});
+    try {
+      if (typeof window !== 'undefined') {
+        localStorage.setItem('vettify_theme', nextTheme);
+      }
+    } catch {}
   };
 
   // UI Navigation & Modals
@@ -186,20 +289,42 @@ export default function App() {
   // Initialize Audio Blobs & IndexedDB cache on first mount
   useEffect(() => {
     const initApp = async () => {
-      const storedTracks = await offlineStorage.getAllTracks();
-      const storedPlaylists = await offlineStorage.getAllPlaylists();
-      const storedFolders = await offlineStorage.getAllFolders();
-      const storedPrefs = await offlineStorage.getKV<UserPreferences>('user_preferences');
-      const storedEq = await offlineStorage.getKV<EqualizerSettings>('equalizer_settings');
+      try {
+        const storedTracks = await offlineStorage.getAllTracks().catch(() => []);
+        const storedPlaylists = await offlineStorage.getAllPlaylists().catch(() => []);
+        const storedFolders = await offlineStorage.getAllFolders().catch(() => []);
+        const storedPrefs = await offlineStorage.getKV<UserPreferences>('user_preferences').catch(() => null);
+        const storedEq = await offlineStorage.getKV<EqualizerSettings>('equalizer_settings').catch(() => null);
 
-      if (storedPrefs) setPreferences(storedPrefs);
-      if (storedEq) {
-        setEqualizer(storedEq);
-        audioEngine.applyEqualizer(storedEq);
-      }
+        if (storedPrefs && typeof storedPrefs === 'object') {
+          setPreferences({
+            ...INITIAL_PREFERENCES,
+            ...storedPrefs,
+            favoriteGenres: Array.isArray(storedPrefs.favoriteGenres) ? storedPrefs.favoriteGenres : INITIAL_PREFERENCES.favoriteGenres,
+            activities: Array.isArray(storedPrefs.activities) ? storedPrefs.activities : INITIAL_PREFERENCES.activities,
+            keepScreenAwake: storedPrefs.keepScreenAwake ?? true,
+          });
+        }
+        if (storedEq && typeof storedEq === 'object') {
+          const validEq = {
+            ...INITIAL_EQUALIZER,
+            ...storedEq,
+            bands: Array.isArray(storedEq.bands) && storedEq.bands.length === 10 ? storedEq.bands : INITIAL_EQUALIZER.bands,
+          };
+          setEqualizer(validEq);
+          audioEngine.applyEqualizer(validEq);
+        }
 
-      if (storedPlaylists.length > 0) setPlaylists(storedPlaylists);
-      if (storedFolders.length > 0) setFolders(storedFolders);
+        if (Array.isArray(storedPlaylists) && storedPlaylists.length > 0) {
+          const safePls = storedPlaylists.map((p: any, idx: number) => ({
+            ...p,
+            id: p.id || `pl-${idx}`,
+            title: p.title || 'Untitled Playlist',
+            trackIds: Array.isArray(p.trackIds) ? p.trackIds : [],
+          }));
+          setPlaylists(safePls);
+        }
+        if (Array.isArray(storedFolders) && storedFolders.length > 0) setFolders(storedFolders);
 
       // Re-hydrate audio URLs for offline tracks & sanitize track metadata
       // ALWAYS generate fresh Object URLs because browser revokes previous session URLs on reload!
@@ -209,38 +334,45 @@ export default function App() {
       for (const rawTrack of storedTracks) {
         let t = sanitizeTrack(rawTrack);
 
-        if (t.isLocal || t.blobId) {
-          const blob = await offlineStorage.getAudioBlob(t.blobId || t.id);
-          if (blob) {
-            t.audioUrl = URL.createObjectURL(blob);
+        // ALWAYS attempt to re-hydrate from IndexedDB blob if available
+        const blob = await offlineStorage.getAudioBlobForTrack(t).catch(() => null);
 
-            // If artist was unresolved or default, extract embedded ID3 tags from file blob
-            if (
-              !t.artist ||
-              t.artist === 'Local Artist' ||
-              t.artist === 'Unknown Artist' ||
-              t.artist === 'Device Music' ||
-              t.title.includes(';')
-            ) {
-              const tags = await readAudioTags(blob).catch(() => null);
-              if (tags) {
-                if (tags.title) t.title = tags.title;
-                if (tags.artist) t.artist = tags.artist;
-                if (tags.album && (!t.album || t.album === 'Device Music')) t.album = tags.album;
-                if (tags.genre && (!t.genre || t.genre === 'Electronic')) t.genre = tags.genre;
-                if (tags.coverUrl && !t.coverUrl) t.coverUrl = tags.coverUrl;
-                t = sanitizeTrack(t);
-              }
+        if (blob) {
+          t.audioUrl = URL.createObjectURL(blob);
+          t.blobId = t.blobId || t.id;
+          t.isLocal = true;
+          t.isOfflineAvailable = true;
+
+          // If artist was unresolved or default, extract embedded ID3 tags from file blob
+          if (
+            !t.artist ||
+            t.artist === 'Local Artist' ||
+            t.artist === 'Unknown Artist' ||
+            t.artist === 'Device Music' ||
+            t.title.includes(';')
+          ) {
+            const tags = await readAudioTags(blob).catch(() => null);
+            if (tags) {
+              if (tags.title) t.title = tags.title;
+              if (tags.artist) t.artist = tags.artist;
+              if (tags.album && (!t.album || t.album === 'Device Music')) t.album = tags.album;
+              if (tags.genre && (!t.genre || t.genre === 'Electronic')) t.genre = tags.genre;
+              if (tags.coverUrl && !t.coverUrl) t.coverUrl = tags.coverUrl;
+              t = sanitizeTrack(t);
             }
           }
-        }
-        if (!t.audioUrl) {
-          const vibe = t.genre.toLowerCase().includes('synth')
-            ? 'synthwave'
-            : t.genre.toLowerCase().includes('ambient')
-            ? 'ambient'
-            : 'lofi';
-          t.audioUrl = audioEngine.getProceduralTrackUrl(vibe);
+        } else if (!t.audioUrl || t.audioUrl.startsWith('blob:')) {
+          // If blob URL expired and no local blob, route to server audio stream or procedural demo
+          if (!t.id.startsWith('track-v')) {
+            t.audioUrl = `/api/audio/${t.id}`;
+          } else {
+            const vibe = t.genre.toLowerCase().includes('synth')
+              ? 'synthwave'
+              : t.genre.toLowerCase().includes('ambient')
+              ? 'ambient'
+              : 'lofi';
+            t.audioUrl = audioEngine.getProceduralTrackUrl(vibe);
+          }
         }
 
         if (t.title !== rawTrack.title || t.artist !== rawTrack.artist) {
@@ -254,9 +386,15 @@ export default function App() {
         offlineStorage.saveTracks(sanitizedStoredTracks).catch(() => {});
       }
 
-      let activeTracks = sanitizedStoredTracks;
+      // Clean, deduplicate and purge demo tracks from stored tracks
+      let activeTracks = deduplicateAndPurgeTracks(sanitizedStoredTracks);
+      const hadDuplicates = activeTracks.length !== sanitizedStoredTracks.length;
+      if (hadDuplicates || metadataMigrated) {
+        await offlineStorage.replaceTracks(activeTracks).catch(() => {});
+      }
+
       if (activeTracks.length === 0) {
-        // Provide rich studio demo tracks so user can test and play immediately on install!
+        // Provide rich studio demo tracks only if library is completely empty
         activeTracks = DEFAULT_TRACKS.map((t) => {
           const vibe = t.genre.toLowerCase().includes('synth')
             ? 'synthwave'
@@ -276,15 +414,16 @@ export default function App() {
         const cloudTracks = await cloudSyncService.fetchCloudTracks();
         if (cloudTracks.length > 0) {
           setCloudTracksCount(cloudTracks.length);
-          const existingIds = new Set(activeTracks.map((t) => t.id));
-          const newCloudTracks = cloudTracks.filter((ct) => !existingIds.has(ct.id));
-          if (newCloudTracks.length > 0) {
-            activeTracks = [...newCloudTracks, ...activeTracks];
-            offlineStorage.saveTracks(activeTracks).catch(() => {});
-          }
+          activeTracks = deduplicateAndPurgeTracks([...activeTracks, ...cloudTracks]);
+          await offlineStorage.replaceTracks(activeTracks).catch(() => {});
         }
       } catch (err) {
         console.warn('Could not load cloud tracks on init:', err);
+      }
+
+      if (hadDuplicates && sanitizedStoredTracks.length > 417) {
+        setCleanFeedback(`✨ Purged duplicate tracks and restored exact library (${activeTracks.length} tracks)!`);
+        setTimeout(() => setCleanFeedback(null), 5000);
       }
 
       setTracks(activeTracks);
@@ -333,7 +472,7 @@ export default function App() {
       (async () => {
         let tracksUpdated = false;
         const tracksNeedingIdentification = activeTracks.filter(
-          (t) => !t.coverUrl || !t.album || t.album === 'Device Music' || /masstamilan|starmusiq/i.test(t.album)
+          (t) => !t.coverUrl || t.coverUrl.startsWith('blob:') || !t.album || t.album === 'Device Music' || /masstamilan|starmusiq/i.test(t.album)
         );
         for (const t of tracksNeedingIdentification) {
           try {
@@ -345,7 +484,7 @@ export default function App() {
                 t.artist = identified.artist;
               }
               tracksUpdated = true;
-            } else if (!t.coverUrl) {
+            } else if (!t.coverUrl || t.coverUrl.startsWith('blob:')) {
               const cover = await fetchCoverArtForTrack(t.title, t.artist, t.album, t.genre);
               if (cover) {
                 t.coverUrl = cover;
@@ -368,30 +507,67 @@ export default function App() {
           }
         }
       })();
-    };
+    } catch (initErr) {
+      console.warn('initApp error recovered:', initErr);
+    }
+  };
 
-    initApp();
-  }, []);
+  initApp();
+}, []);
 
-  // Dedicated function to poll or manually check for new audio uploaded from laptop/desktop
+  // Dedicated function to poll or manually check for new audio and playlists uploaded from laptop/desktop
   const handleSyncCloudTracks = async (silent: boolean = false) => {
     setIsSyncingWithCloud(true);
     try {
       const res = await cloudSyncService.syncWithCloud(tracksRef.current);
       setCloudTracksCount(res.count);
+      let syncedTrackCount = 0;
       if (res.newTracks.length > 0) {
-        const combined = [...res.newTracks, ...tracksRef.current];
+        const combined = deduplicateAndPurgeTracks([...res.newTracks, ...tracksRef.current]);
+        syncedTrackCount = res.newTracks.length;
         setTracks(combined);
-        setQueue((prev) => [...res.newTracks, ...prev]);
-        await offlineStorage.saveTracks(combined).catch(() => {});
-        setCleanFeedback(
-          `☁️ Synced "${res.newTracks[0].title}" from laptop!`
-        );
+        setQueue(combined);
+        await offlineStorage.replaceTracks(combined).catch(() => {});
+      }
+
+      // Seamlessly sync playlists from cloud if laptop created or updated them
+      let syncedPlaylistCount = 0;
+      const cloudState = await cloudSyncService.fetchCloudSyncState();
+      if (cloudState && Array.isArray(cloudState.playlists) && cloudState.playlists.length > 0) {
+        const sanitizedCloudPlaylists = cloudState.playlists.map((p: any, idx: number) => ({
+          ...p,
+          id: p.id || `playlist-cloud-${Date.now()}-${idx}`,
+          title: p.title || 'Cloud Playlist',
+          description: p.description || '',
+          trackIds: Array.isArray(p.trackIds) ? p.trackIds : [],
+          coverGradient: p.coverGradient || 'from-zinc-800 to-zinc-950',
+          createdAt: p.createdAt || new Date().toISOString(),
+        }));
+        const currentIds = new Set(playlistsRef.current.map((p) => p.id));
+        const hasDifferences =
+          sanitizedCloudPlaylists.some((p: any) => !currentIds.has(p.id)) ||
+          sanitizedCloudPlaylists.length !== playlistsRef.current.length;
+        if (hasDifferences) {
+          syncedPlaylistCount = sanitizedCloudPlaylists.length;
+          setPlaylists(sanitizedCloudPlaylists);
+          await offlineStorage.savePlaylists(sanitizedCloudPlaylists).catch(() => {});
+          if (Array.isArray(cloudState.folders) && cloudState.folders.length > 0) {
+            setFolders(cloudState.folders);
+            await offlineStorage.saveFolders(cloudState.folders).catch(() => {});
+          }
+        }
+      }
+
+      if (syncedTrackCount > 0 || syncedPlaylistCount > 0) {
+        const parts = [];
+        if (syncedTrackCount > 0) parts.push(`${syncedTrackCount} new track${syncedTrackCount === 1 ? '' : 's'}`);
+        if (syncedPlaylistCount > 0) parts.push(`${syncedPlaylistCount} playlist${syncedPlaylistCount === 1 ? '' : 's'}`);
+        setCleanFeedback(`☁️ Synced ${parts.join(' and ')} from laptop!`);
         setTimeout(() => setCleanFeedback(null), 4500);
       } else if (!silent) {
         setCleanFeedback(
           res.count > 0
-            ? `☁️ All ${res.count} cloud tracks from laptop are synchronized!`
+            ? `☁️ All ${res.count} cloud tracks & playlists from laptop are synchronized!`
             : '☁️ Cloud is synchronized with your library.'
         );
         setTimeout(() => setCleanFeedback(null), 3500);
@@ -471,6 +647,20 @@ export default function App() {
     audioEngine.pause();
   };
 
+  const handleCloudCleared = async () => {
+    setCloudTracksCount(0);
+    // Mark tracks as no longer cloud-synced on the server, preserving local files
+    const updated = tracks.map((t) => ({
+      ...t,
+      isCloudSynced: false,
+    }));
+    setTracks(updated);
+    setQueue(updated);
+    await offlineStorage.replaceTracks(updated).catch(() => {});
+    setCleanFeedback('☁️ All audio tracks cleared from cloud server.');
+    setTimeout(() => setCleanFeedback(null), 4000);
+  };
+
   // Subscribe to audio engine events
   useEffect(() => {
     let lastSaveTime = 0;
@@ -509,6 +699,44 @@ export default function App() {
     audioEngine.onSeekCallback = (s) => {
       audioEngine.seek(s);
     };
+    audioEngine.onErrorCallback = async (failedUrl: string) => {
+      const current = currentTrackRef.current;
+      if (!current) return;
+      console.warn('Audio playback error on source, attempting recovery:', failedUrl);
+
+      // 1. Try to recover local audio blob from IndexedDB
+      const blob = await offlineStorage.getAudioBlobForTrack(current).catch(() => null);
+
+      if (blob) {
+        const freshBlobUrl = URL.createObjectURL(blob);
+        current.audioUrl = freshBlobUrl;
+        audioEngine.playTrack(freshBlobUrl, 0);
+        return;
+      }
+
+      // 2. If it was a blob URL or local error, try falling back to the server audio stream
+      if (failedUrl.startsWith('blob:') || current.isCloudSynced || current.id.startsWith('cloud-')) {
+        const cloudUrl = `/api/audio/${current.id}`;
+        if (failedUrl !== cloudUrl) {
+          current.audioUrl = cloudUrl;
+          audioEngine.playTrack(cloudUrl, 0);
+          return;
+        }
+      }
+
+      // 3. ONLY default demo tracks (track-v1, track-v2, etc.) use procedural audio
+      if (current.id.startsWith('track-v')) {
+        const vibe = current.genre.toLowerCase().includes('synth') ? 'synthwave' : 'lofi';
+        const fallbackUrl = audioEngine.getProceduralTrackUrl(vibe);
+        audioEngine.playTrack(fallbackUrl, 0);
+        return;
+      }
+
+      // 4. For user uploaded tracks: NEVER silently play a fake test song!
+      audioEngine.pause();
+      setCleanFeedback(`⚠️ Audio for "${current.title}" is unavailable. Please re-import this track via Import Audio.`);
+      setTimeout(() => setCleanFeedback(null), 6000);
+    };
 
     if (currentTrack) {
       audioEngine.updateMediaMetadata(currentTrack);
@@ -519,29 +747,94 @@ export default function App() {
     };
   }, [currentTrack, repeatMode, queue, tracks, isSmartShuffleActive]);
 
-  // Keep screen awake via Screen Wake Lock API if user enabled study/awake mode
+  // Resilient Screen Wake Lock: prevents mobile devices from sleeping during playback or study mode
   useEffect(() => {
     let wakeLockSentinel: any = null;
+    let isMounted = true;
+
     const requestWakeLock = async () => {
-      if ('wakeLock' in navigator && isPlaying && preferences.keepScreenAwake) {
+      const shouldKeepAwake = preferences.keepScreenAwake || isPlaying;
+      if (
+        'wakeLock' in navigator &&
+        shouldKeepAwake &&
+        typeof document !== 'undefined' &&
+        document.visibilityState === 'visible' &&
+        !wakeLockSentinel
+      ) {
         try {
           wakeLockSentinel = await (navigator as any).wakeLock.request('screen');
+          if (wakeLockSentinel) {
+            wakeLockSentinel.addEventListener('release', () => {
+              wakeLockSentinel = null;
+            });
+          }
         } catch {
-          // Ignore wake lock rejection
+          // Ignore wake lock rejection (e.g. low battery mode or browser policy)
         }
       }
     };
 
-    if (isPlaying && preferences.keepScreenAwake) {
+    const handleVisibilityChange = () => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
+        requestWakeLock();
+      }
+    };
+
+    const handleUserInteraction = () => {
+      if (!wakeLockSentinel && (preferences.keepScreenAwake || isPlaying)) {
+        requestWakeLock();
+      }
+    };
+
+    if (preferences.keepScreenAwake || isPlaying) {
       requestWakeLock();
     }
 
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('focus', handleVisibilityChange);
+    window.addEventListener('pointerdown', handleUserInteraction, { passive: true });
+    window.addEventListener('touchstart', handleUserInteraction, { passive: true });
+
     return () => {
+      isMounted = false;
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('focus', handleVisibilityChange);
+      window.removeEventListener('pointerdown', handleUserInteraction);
+      window.removeEventListener('touchstart', handleUserInteraction);
       if (wakeLockSentinel) {
         wakeLockSentinel.release().catch(() => {});
+        wakeLockSentinel = null;
       }
     };
   }, [isPlaying, preferences.keepScreenAwake]);
+
+  // Keep-alive heartbeat: Pings /api/ping every 3 minutes while the app is active
+  // This keeps the Cloud Run dev server container awake so it never cold-starts during listening
+  useEffect(() => {
+    const pingServer = async () => {
+      if (typeof document !== 'undefined' && !document.hidden) {
+        try {
+          await fetch('/api/ping').catch(() => {});
+        } catch {}
+      }
+    };
+
+    const timer = setInterval(pingServer, 180000); // 3 minutes
+    return () => clearInterval(timer);
+  }, []);
+
+  const handleToggleScreenAwake = async () => {
+    const nextAwake = !preferences.keepScreenAwake;
+    const updated = { ...preferences, keepScreenAwake: nextAwake };
+    setPreferences(updated);
+    await offlineStorage.setKV('user_preferences', updated).catch(() => {});
+    setCleanFeedback(
+      nextAwake
+        ? '☀️ Screen Awake ON: Display will stay on during playback & study'
+        : '🌙 Screen Awake OFF: Display will follow system sleep timer'
+    );
+    setTimeout(() => setCleanFeedback(null), 3500);
+  };
 
   // Handle Play/Pause: MUST be synchronous to preserve Android touch gesture token!
   const handlePlayPause = () => {
@@ -557,8 +850,12 @@ export default function App() {
     } else {
       let url = currentTrack.audioUrl;
       if (!url) {
-        const vibe = currentTrack.genre.toLowerCase().includes('synth') ? 'synthwave' : 'lofi';
-        url = audioEngine.getProceduralTrackUrl(vibe);
+        if (currentTrack.id.startsWith('track-v')) {
+          const vibe = currentTrack.genre.toLowerCase().includes('synth') ? 'synthwave' : 'lofi';
+          url = audioEngine.getProceduralTrackUrl(vibe);
+        } else {
+          url = `/api/audio/${currentTrack.id}`;
+        }
         currentTrack.audioUrl = url;
       }
       audioEngine.playTrack(url, currentTime);
@@ -597,12 +894,16 @@ export default function App() {
 
     let url = track.audioUrl;
     if (!url) {
-      const vibe = track.genre.toLowerCase().includes('synth')
-        ? 'synthwave'
-        : track.genre.toLowerCase().includes('ambient')
-        ? 'ambient'
-        : 'lofi';
-      url = audioEngine.getProceduralTrackUrl(vibe);
+      if (track.id.startsWith('track-v')) {
+        const vibe = track.genre.toLowerCase().includes('synth')
+          ? 'synthwave'
+          : track.genre.toLowerCase().includes('ambient')
+          ? 'ambient'
+          : 'lofi';
+        url = audioEngine.getProceduralTrackUrl(vibe);
+      } else {
+        url = `/api/audio/${track.id}`;
+      }
       track.audioUrl = url;
     }
 
@@ -768,13 +1069,23 @@ export default function App() {
 
   // Add Tracks from device files
   const handleTracksAdded = (newTracks: Track[]) => {
-    const sanitized = newTracks.map(sanitizeTrack);
-    const combined = [...sanitized, ...tracks];
+    const prepared = newTracks.map((t) => ({
+      ...t,
+      isLocal: true,
+      isOfflineAvailable: true,
+    }));
+    const sanitized = prepared.map(sanitizeTrack);
+    const combined = deduplicateAndPurgeTracks([...sanitized, ...tracks]);
+    setSelectedGenreFilter('All');
+    setSearchQuery('');
     setTracks(combined);
     setQueue(combined);
+    offlineStorage.replaceTracks(combined).catch(() => {});
     if (sanitized.length > 0) {
       handleSelectTrack(sanitized[0], combined);
     }
+    setCleanFeedback(`📱 Added ${sanitized.length} local track${sanitized.length === 1 ? '' : 's'} to offline library!`);
+    setTimeout(() => setCleanFeedback(null), 4500);
   };
 
   // Dedicated scanner to separate artists from titles across all stored tracks
@@ -873,17 +1184,26 @@ export default function App() {
 
   // Filtered tracks for Library view
   const filteredTracks = tracks.filter((t) => {
-    const matchesSearch =
-      t.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      t.artist.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      t.genre.toLowerCase().includes(searchQuery.toLowerCase());
+    if (!t) return false;
+    const title = (t.title || '').toLowerCase();
+    const artist = (t.artist || '').toLowerCase();
+    const genre = (t.genre || '').toLowerCase();
+    const query = searchQuery.toLowerCase();
+    const matchesSearch = title.includes(query) || artist.includes(query) || genre.includes(query);
     const matchesGenre =
-      selectedGenreFilter === 'All' || t.genre.toLowerCase().includes(selectedGenreFilter.toLowerCase());
-    const matchesOffline = !preferences.offlineOnlyMode || t.isOfflineAvailable;
+      selectedGenreFilter === 'All'
+        ? true
+        : selectedGenreFilter === 'Cloud'
+        ? Boolean(t.isCloudSynced || t.audioUrl?.startsWith('/api/audio/'))
+        : genre.includes(selectedGenreFilter.toLowerCase());
+    const matchesOffline =
+      !preferences?.offlineOnlyMode ||
+      Boolean(t.isOfflineAvailable || t.isLocal || t.blobId || t.audioUrl?.startsWith('blob:'));
     return matchesSearch && matchesGenre && matchesOffline;
   });
 
-  const availableGenres = ['All', ...Array.from(new Set(tracks.map((t) => t.genre)))];
+  const rawGenres = Array.from(new Set(tracks.map((t) => t?.genre || 'Electronic'))).filter((g) => g !== 'Cloud');
+  const availableGenres = ['All', 'Cloud', ...rawGenres];
 
   const formatTime = (secs: number) => {
     if (isNaN(secs) || secs < 0) return '0:00';
@@ -985,6 +1305,33 @@ export default function App() {
               </span>
             </button>
 
+            {/* Screen Awake Toggle Button */}
+            <button
+              onClick={handleToggleScreenAwake}
+              className={`px-2.5 py-1.5 rounded-lg border transition flex items-center gap-1.5 text-xs font-semibold shadow-xs ${
+                preferences.keepScreenAwake
+                  ? 'bg-amber-500/20 border-amber-500/50 text-amber-300 hover:bg-amber-500/30'
+                  : isLightMode
+                  ? 'bg-slate-200/90 border-slate-300 text-slate-600 hover:bg-slate-300'
+                  : 'bg-zinc-800/80 border-zinc-700/80 text-zinc-400 hover:text-white hover:bg-zinc-700'
+              }`}
+              title={
+                preferences.keepScreenAwake
+                  ? 'Screen Awake Active: Display will stay on during playback & study'
+                  : 'Screen Awake Inactive: Display will follow device sleep timer'
+              }
+              aria-label="Toggle Screen Awake"
+            >
+              {preferences.keepScreenAwake ? (
+                <Eye className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+              ) : (
+                <EyeOff className="w-3.5 h-3.5 text-zinc-500 shrink-0" />
+              )}
+              <span className="hidden sm:inline text-[11px]">
+                {preferences.keepScreenAwake ? 'Awake' : 'Sleep'}
+              </span>
+            </button>
+
             {/* Cloud Sync Button */}
             <button
               onClick={() => setIsCloudSyncOpen(true)}
@@ -999,6 +1346,9 @@ export default function App() {
                 </span>
               )}
             </button>
+
+            {/* Install PWA Prompt Button */}
+            <PWAInstallPrompt mode="button" />
 
             <button
               onClick={() => setIsSmartPlaylistMakerOpen(true)}
@@ -1062,6 +1412,9 @@ export default function App() {
                   </button>
                 </div>
               </div>
+
+              {/* Mobile Install App Banner for instant loading */}
+              <PWAInstallPrompt mode="banner" className="mb-2.5 sm:hidden shrink-0" />
 
               {/* Master Studio Console Grid: 3-Column Studio Layout on Desktop */}
               <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 lg:gap-6 items-stretch flex-1 min-h-0 py-1">
@@ -1346,7 +1699,7 @@ export default function App() {
               ) : (
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
                   {playlists.map((playlist) => {
-                    const trackCount = playlist.trackIds.length;
+                    const trackCount = Array.isArray(playlist?.trackIds) ? playlist.trackIds.length : 0;
                     return (
                       <div
                         key={playlist.id}
@@ -1360,7 +1713,7 @@ export default function App() {
 
                             <div className="flex items-center gap-1.5">
                               <button
-                                onClick={() => handlePlayPlaylist(playlist.trackIds, playlist.title)}
+                                onClick={() => handlePlayPlaylist(playlist.trackIds || [], playlist.title)}
                                 className="p-2 rounded-xl bg-orange-600 hover:bg-orange-500 text-white transition shadow-sm active:scale-95"
                                 title="Play Entire Playlist"
                               >
@@ -1431,7 +1784,10 @@ export default function App() {
           <div className="lg:grid lg:grid-cols-12 lg:gap-8 items-start">
             {/* PRIMARY COLUMN: LIBRARY & TRACK LIST (7 Cols on desktop) */}
             <div className="lg:col-span-7 space-y-5">
-            {/* Library Controls Bar */}
+              {/* Install PWA Prompt Banner */}
+              <PWAInstallPrompt mode="banner" className="mb-3" />
+
+              {/* Library Controls Bar */}
             <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2.5 bg-[#141418] border border-zinc-800 p-3 sm:p-3.5 rounded-xl">
               <div className="relative flex-1 min-w-0">
                 <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500" />
@@ -1485,10 +1841,35 @@ export default function App() {
 
             {/* Sub-tabs & Segmented Genre Filter: Clean, tight layout without gaps */}
             <div className="flex flex-wrap items-center justify-between gap-2.5 border-b border-zinc-800/80 pb-2 text-xs">
-              <div className="flex items-center gap-2.5 min-w-0">
+              <div className="flex items-center gap-2 min-w-0">
                 <span className="font-semibold text-zinc-100 text-xs">
                   Tracks ({filteredTracks.length})
                 </span>
+                {selectedGenreFilter === 'Cloud' && (
+                  <button
+                    onClick={() => setIsCloudSyncOpen(true)}
+                    className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-rose-950/50 hover:bg-rose-900/60 border border-rose-500/50 text-[11px] font-semibold text-rose-300 hover:text-rose-200 transition shadow-sm active:scale-95"
+                    title="Clear songs stored on the cloud server"
+                  >
+                    <Trash2 className="w-3 h-3 text-rose-400" />
+                    <span>Clear Cloud Storage</span>
+                  </button>
+                )}
+                <button
+                  onClick={() => {
+                    const deduped = deduplicateAndPurgeTracks(tracks);
+                    setTracks(deduped);
+                    setQueue(deduped);
+                    offlineStorage.replaceTracks(deduped).catch(() => {});
+                    setCleanFeedback(`✨ Purged duplicates! Library verified at ${deduped.length} exact tracks.`);
+                    setTimeout(() => setCleanFeedback(null), 4000);
+                  }}
+                  className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-zinc-850 hover:bg-zinc-800 border border-zinc-700/60 text-[11px] font-medium text-cyan-400 hover:text-cyan-300 transition shadow-sm active:scale-95"
+                  title="Purge duplicate tracks and restore exact library count"
+                >
+                  <Layers className="w-3 h-3 text-cyan-400" />
+                  <span>Deduplicate</span>
+                </button>
                 <button
                   onClick={handleCleanMetadata}
                   disabled={isCleaningMetadata}
@@ -1502,19 +1883,36 @@ export default function App() {
 
               {/* Clean Filter Links */}
               <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar">
-                {availableGenres.slice(0, 5).map((genre) => (
-                  <button
-                    key={genre}
-                    onClick={() => setSelectedGenreFilter(genre)}
-                    className={`px-2.5 py-1 rounded-lg text-[11px] transition shrink-0 ${
-                      selectedGenreFilter === genre
-                        ? 'bg-zinc-800 text-orange-400 font-semibold shadow-sm'
-                        : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-850'
-                    }`}
-                  >
-                    {genre}
-                  </button>
-                ))}
+                {availableGenres.slice(0, 7).map((genre) => {
+                  const isCloud = genre === 'Cloud';
+                  const isSelected = selectedGenreFilter === genre;
+                  const cloudCount = isCloud
+                    ? tracks.filter((t) => t.isCloudSynced || t.audioUrl?.startsWith('/api/audio/')).length
+                    : 0;
+                  return (
+                    <button
+                      key={genre}
+                      onClick={() => setSelectedGenreFilter(genre)}
+                      className={`px-2.5 py-1 rounded-lg text-[11px] transition shrink-0 flex items-center gap-1.5 ${
+                        isSelected
+                          ? isCloud
+                            ? 'bg-cyan-950 border border-cyan-500/50 text-cyan-300 font-semibold shadow-sm'
+                            : 'bg-zinc-800 text-orange-400 font-semibold shadow-sm'
+                          : isCloud
+                          ? 'text-cyan-400/90 hover:text-cyan-200 hover:bg-cyan-950/40 border border-transparent hover:border-cyan-800/40'
+                          : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-850'
+                      }`}
+                    >
+                      {isCloud && <Cloud className="w-3 h-3 text-cyan-400" />}
+                      <span>{genre}</span>
+                      {isCloud && (
+                        <span className="text-[10px] font-mono px-1 py-0.2 rounded bg-cyan-900/50 text-cyan-200">
+                          {cloudCount}
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
               </div>
             </div>
 
@@ -1576,17 +1974,37 @@ export default function App() {
                   >
                     {/* Visual Audio Indicator (No raw numbers at beginning) */}
                     <div className="flex items-center gap-3 min-w-0 flex-1">
-                      <div className="w-8 h-8 rounded-lg bg-zinc-900 border border-zinc-800 flex items-center justify-center shrink-0 text-zinc-400 transition-colors">
-                        {currentTrack?.id === track.id && isPlaying ? (
-                          <span className="flex items-end gap-0.5 h-3 px-1">
-                            <span className="w-0.5 h-3 bg-orange-400 animate-pulse rounded-full" />
-                            <span className="w-0.5 h-2 bg-orange-400 animate-pulse delay-75 rounded-full" />
-                            <span className="w-0.5 h-3.5 bg-orange-400 animate-pulse delay-150 rounded-full" />
-                          </span>
-                        ) : currentTrack?.id === track.id ? (
-                          <Play className="w-3.5 h-3.5 text-orange-400 fill-current ml-0.5" />
-                        ) : (
-                          <Music className="w-3.5 h-3.5 text-zinc-500" />
+                      <div className="w-9 h-9 rounded-lg bg-zinc-900 border border-zinc-800 flex items-center justify-center shrink-0 text-zinc-400 transition-colors overflow-hidden relative">
+                        {track.coverUrl ? (
+                          <img
+                            src={getHighQualityCoverUrl(track.coverUrl)}
+                            alt={track.title}
+                            className="w-full h-full object-cover"
+                            onError={(e) => {
+                              e.currentTarget.style.display = 'none';
+                            }}
+                          />
+                        ) : null}
+                        {(!track.coverUrl || currentTrack?.id === track.id) && (
+                          <div className={`absolute inset-0 flex items-center justify-center ${
+                            currentTrack?.id === track.id
+                              ? 'bg-black/60 backdrop-blur-[1px]'
+                              : track.coverUrl
+                              ? 'bg-black/20 hover:bg-black/40 transition-colors'
+                              : 'bg-zinc-900'
+                          }`}>
+                            {currentTrack?.id === track.id && isPlaying ? (
+                              <span className="flex items-end gap-0.5 h-3 px-1">
+                                <span className="w-0.5 h-3 bg-orange-400 animate-pulse rounded-full" />
+                                <span className="w-0.5 h-2 bg-orange-400 animate-pulse delay-75 rounded-full" />
+                                <span className="w-0.5 h-3.5 bg-orange-400 animate-pulse delay-150 rounded-full" />
+                              </span>
+                            ) : currentTrack?.id === track.id ? (
+                              <Play className="w-3.5 h-3.5 text-orange-400 fill-current ml-0.5" />
+                            ) : !track.coverUrl ? (
+                              <Music className="w-3.5 h-3.5 text-zinc-500" />
+                            ) : null}
+                          </div>
                         )}
                       </div>
 
@@ -1608,10 +2026,10 @@ export default function App() {
                           </span>
                           <span className="text-zinc-600">·</span>
                           <span className="text-zinc-500 truncate text-[11px]">{track.genre}</span>
-                          {track.isCloudSynced && (
-                            <span className="px-1.5 py-0.5 rounded bg-cyan-950/80 border border-cyan-800/70 text-cyan-300 text-[9px] font-mono font-semibold flex items-center gap-1 shrink-0 ml-1">
+                          {(track.isCloudSynced || track.audioUrl?.startsWith('/api/audio/')) && (
+                            <span className="px-1.5 py-0.5 rounded-md bg-cyan-950/90 border border-cyan-500/50 text-cyan-300 text-[10px] font-mono font-semibold flex items-center gap-1 shrink-0 ml-1 shadow-xs">
                               <Cloud className="w-2.5 h-2.5 text-cyan-400" />
-                              <span>Laptop Synced</span>
+                              <span>Cloud Synced</span>
                             </span>
                           )}
                         </div>
@@ -1843,6 +2261,22 @@ export default function App() {
             <span>Equalizer</span>
           </button>
           <button
+            onClick={handleToggleScreenAwake}
+            className={`flex flex-col items-center gap-1 transition ${
+              preferences.keepScreenAwake
+                ? 'text-amber-400 font-bold'
+                : (isLightMode ? 'text-slate-500 hover:text-slate-900' : 'text-zinc-500 hover:text-zinc-300')
+            }`}
+            title="Toggle Screen Awake"
+          >
+            {preferences.keepScreenAwake ? (
+              <Eye className="w-4 h-4 text-amber-400" />
+            ) : (
+              <EyeOff className="w-4 h-4 text-zinc-500" />
+            )}
+            <span>{preferences.keepScreenAwake ? 'Awake: ON' : 'Awake: OFF'}</span>
+          </button>
+          <button
             onClick={() => setIsSettingsOpen(true)}
             className={`flex flex-col items-center gap-1 transition ${
               isLightMode ? 'hover:text-slate-900' : 'hover:text-zinc-200'
@@ -1910,6 +2344,7 @@ export default function App() {
         isOpen={isUploadOpen}
         onClose={() => setIsUploadOpen(false)}
         onTracksAdded={handleTracksAdded}
+        existingTracks={tracks}
       />
 
       <AiCuratorModal
@@ -1918,12 +2353,21 @@ export default function App() {
         libraryTracks={tracks}
         preferences={preferences}
         onAddPlaylists={(newPls) => {
-          setPlaylists([...newPls, ...playlists]);
-          offlineStorage.savePlaylists([...newPls, ...playlists]);
+          const updated = [...newPls, ...playlists];
+          setPlaylists(updated);
+          offlineStorage.savePlaylists(updated);
+          cloudSyncService.saveCloudSyncState({
+            playlists: updated,
+            folders,
+            preferences,
+            equalizer,
+            lastSyncedAt: Date.now(),
+          });
         }}
         onAddFolders={(newFlds) => {
-          setFolders([...newFlds, ...folders]);
-          offlineStorage.saveFolders([...newFlds, ...folders]);
+          const updated = [...newFlds, ...folders];
+          setFolders(updated);
+          offlineStorage.saveFolders(updated);
         }}
       />
 
@@ -1932,9 +2376,17 @@ export default function App() {
         onClose={() => setIsSmartPlaylistMakerOpen(false)}
         libraryTracks={tracks}
         onAddPlaylists={(newPls) => {
-          setPlaylists([...newPls, ...playlists]);
-          offlineStorage.savePlaylists([...newPls, ...playlists]);
-          setCleanFeedback(`Added ${newPls.length} smart playlist${newPls.length === 1 ? '' : 's'} to Collections!`);
+          const updated = [...newPls, ...playlists];
+          setPlaylists(updated);
+          offlineStorage.savePlaylists(updated);
+          cloudSyncService.saveCloudSyncState({
+            playlists: updated,
+            folders,
+            preferences,
+            equalizer,
+            lastSyncedAt: Date.now(),
+          });
+          setCleanFeedback(`Added ${newPls.length} smart playlist${newPls.length === 1 ? '' : 's'} to Collections & Cloud!`);
           setTimeout(() => setCleanFeedback(null), 4000);
         }}
         onPlayPlaylist={(trackIds, title) => {
@@ -1959,22 +2411,112 @@ export default function App() {
           offlineStorage.setKV('user_preferences', p);
         }}
         playlists={playlists}
+        folders={folders}
         tracks={tracks}
         equalizer={equalizer}
         stats={stats}
-        onRestoreProfile={(restored: any) => {
-          if (restored.tracks) setTracks(restored.tracks);
-          if (restored.playlists) setPlaylists(restored.playlists);
-          if (restored.folders) setFolders(restored.folders);
-          if (restored.preferences) setPreferences(restored.preferences);
+        onRestoreProfile={async (restored: any) => {
+          if (!restored || typeof restored !== 'object') return;
+
+          // 1. Strict 1-to-1 Track Reconciliation (Purges old demo/placeholder tracks)
+          if (Array.isArray(restored.tracks) && restored.tracks.length > 0) {
+            const norm = (s?: string) => (s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+            const restoredMap = new Map<string, Track>();
+
+            restored.tracks.forEach((raw: any) => {
+              const t = sanitizeTrack(raw);
+              if (!t.audioUrl) {
+                const vibe = t.genre?.toLowerCase().includes('synth')
+                  ? 'synthwave'
+                  : t.genre?.toLowerCase().includes('ambient')
+                  ? 'ambient'
+                  : 'lofi';
+                t.audioUrl = audioEngine.getProceduralTrackUrl(vibe);
+              }
+              const key = `${norm(t.title)}::${norm(t.artist)}`;
+              if (!restoredMap.has(key)) {
+                restoredMap.set(key, t);
+              }
+            });
+
+            const finalRestoredTracks = deduplicateAndPurgeTracks(Array.from(restoredMap.values()));
+            setTracks(finalRestoredTracks);
+            setQueue(finalRestoredTracks);
+            if (finalRestoredTracks.length > 0) {
+              setCurrentTrack(finalRestoredTracks[0]);
+              audioEngine.updateMediaMetadata(finalRestoredTracks[0]);
+            }
+            setCloudTracksCount(finalRestoredTracks.length);
+            offlineStorage.replaceTracks(finalRestoredTracks).catch(() => {});
+          }
+
+          // 2. Safe Playlists with array trackIds check
+          if (Array.isArray(restored.playlists) && restored.playlists.length > 0) {
+            const sanitizedPlaylists = restored.playlists.map((p: any, idx: number) => ({
+              ...p,
+              id: p.id || `playlist-restored-${Date.now()}-${idx}`,
+              title: p.title || 'Restored Playlist',
+              description: p.description || '',
+              trackIds: Array.isArray(p.trackIds) ? p.trackIds : [],
+              coverGradient: p.coverGradient || 'from-zinc-800 to-zinc-950',
+              createdAt: p.createdAt || new Date().toISOString(),
+            }));
+            setPlaylists(sanitizedPlaylists);
+            offlineStorage.savePlaylists(sanitizedPlaylists).catch(() => {});
+          }
+
+          // 3. Safe Folders
+          if (Array.isArray(restored.folders)) {
+            setFolders(restored.folders);
+            offlineStorage.saveFolders(restored.folders).catch(() => {});
+          }
+
+          // 4. Safe Preferences (never replace with empty object)
+          if (restored.preferences && typeof restored.preferences === 'object') {
+            const mergedPrefs: UserPreferences = {
+              ...INITIAL_PREFERENCES,
+              ...preferences,
+              ...restored.preferences,
+              favoriteGenres: Array.isArray(restored.preferences.favoriteGenres)
+                ? restored.preferences.favoriteGenres
+                : preferences.favoriteGenres || INITIAL_PREFERENCES.favoriteGenres,
+              activities: Array.isArray(restored.preferences.activities)
+                ? restored.preferences.activities
+                : preferences.activities || INITIAL_PREFERENCES.activities,
+              theme: restored.preferences.theme || preferences.theme || INITIAL_PREFERENCES.theme,
+              keepScreenAwake: restored.preferences.keepScreenAwake ?? preferences.keepScreenAwake ?? true,
+            };
+            setPreferences(mergedPrefs);
+            offlineStorage.setKV('user_preferences', mergedPrefs).catch(() => {});
+          }
+
+          // 5. Safe Equalizer
+          if (restored.equalizer && typeof restored.equalizer === 'object') {
+            const mergedEq: EqualizerSettings = {
+              ...INITIAL_EQUALIZER,
+              ...equalizer,
+              ...restored.equalizer,
+              bands: Array.isArray(restored.equalizer.bands) && restored.equalizer.bands.length === 10
+                ? restored.equalizer.bands
+                : equalizer.bands || INITIAL_EQUALIZER.bands,
+            };
+            setEqualizer(mergedEq);
+            audioEngine.applyEqualizer(mergedEq);
+            offlineStorage.setKV('equalizer_settings', mergedEq).catch(() => {});
+          }
+
+          const plCount = Array.isArray(restored.playlists) ? restored.playlists.length : 0;
+          setCleanFeedback(`☁️ Restored ${plCount} playlist${plCount === 1 ? '' : 's'} and settings from laptop!`);
+          setTimeout(() => setCleanFeedback(null), 4500);
         }}
-        onSyncCloudTracks={(newTracks) => {
-          const combined = [...newTracks, ...tracks];
+        onSyncCloudTracks={(updatedTracks) => {
+          const combined = deduplicateAndPurgeTracks([...updatedTracks, ...tracks]);
           setTracks(combined);
-          setQueue((prev) => [...newTracks, ...prev]);
-          offlineStorage.saveTracks(combined).catch(() => {});
+          setQueue(combined);
+          offlineStorage.replaceTracks(combined).catch(() => {});
         }}
         onSelectTrack={(t) => handleSelectTrack(t)}
+        onCloudCleared={handleCloudCleared}
       />
 
       <SettingsModal
@@ -2003,6 +2545,7 @@ export default function App() {
         equalizer={equalizer}
         onOpenUpload={() => setIsUploadOpen(true)}
         onClearLibrary={handleClearLibrary}
+        onOpenCloudSync={() => setIsCloudSyncOpen(true)}
       />
     </div>
   );

@@ -16,22 +16,32 @@ import {
   Cloud,
   CheckCircle2,
   Laptop,
+  AlertCircle,
+  RefreshCw,
 } from 'lucide-react';
 
 interface FileUploadModalProps {
   isOpen: boolean;
   onClose: () => void;
   onTracksAdded: (newTracks: Track[]) => void;
+  existingTracks?: Track[];
 }
 
 export const FileUploadModal: React.FC<FileUploadModalProps> = ({
   isOpen,
   onClose,
   onTracksAdded,
+  existingTracks = [],
 }) => {
   const [isScanning, setIsScanning] = useState(false);
   const [progress, setProgress] = useState<ScanProgress | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [importSummary, setImportSummary] = useState<{
+    successCount: number;
+    failedFiles: Array<{ file: File; reason: string }>;
+  } | null>(null);
+  const [showFailureDetails, setShowFailureDetails] = useState(false);
+
   const isAndroid = isAndroidDevice();
 
   if (!isOpen) return null;
@@ -77,14 +87,20 @@ export const FileUploadModal: React.FC<FileUploadModalProps> = ({
     });
 
     try {
-      const tracks = await deviceFileService.processDeviceFiles(files, (p) => {
-        setProgress(p);
+      const result = await deviceFileService.processDeviceFiles(
+        files,
+        (p) => setProgress(p),
+        existingTracks
+      );
+
+      setImportSummary({
+        successCount: result.successTracks.length,
+        failedFiles: result.failedFiles,
       });
 
-      if (tracks.length > 0) {
-        onTracksAdded(tracks);
-        onClose();
-      } else {
+      if (result.successTracks.length > 0) {
+        onTracksAdded(result.successTracks);
+      } else if (result.failedFiles.length === 0) {
         setErrorMsg('No supported audio files (.mp3, .flac, .wav, .m4a, .aac, .ogg) found.');
       }
     } catch (err: any) {
@@ -93,6 +109,12 @@ export const FileUploadModal: React.FC<FileUploadModalProps> = ({
       setIsScanning(false);
       setProgress(null);
     }
+  };
+
+  const handleRetryFailed = async () => {
+    if (!importSummary || importSummary.failedFiles.length === 0) return;
+    const filesToRetry = importSummary.failedFiles.map((f) => f.file);
+    await processSelectedFiles(filesToRetry);
   };
 
   const handleDrop = async (e: React.DragEvent) => {
@@ -141,7 +163,7 @@ export const FileUploadModal: React.FC<FileUploadModalProps> = ({
               <Smartphone className="w-3.5 h-3.5 text-cyan-400" />
             </span>
             <p className="text-zinc-300 text-[11px] leading-relaxed">
-              When you upload tracks from this browser, they are instantly stored in the studio cloud and automatically appear in your track library on your mobile phone!
+              When you upload tracks from this browser, they are instantly stored in IndexedDB and ready to sync to the studio cloud whenever you choose!
             </p>
           </div>
         </div>
@@ -158,28 +180,105 @@ export const FileUploadModal: React.FC<FileUploadModalProps> = ({
           </div>
         )}
 
-        {/* Progress Bar when reading and uploading */}
+        {/* Progress Summary Section */}
+        {importSummary && !isScanning && (
+          <div className="mb-4 p-4 rounded-xl bg-zinc-900/90 border border-zinc-800 space-y-3">
+            <div className="flex items-center justify-between">
+              <h4 className="text-xs font-bold text-zinc-200 uppercase tracking-wider">
+                Import Progress Summary
+              </h4>
+              <button
+                onClick={() => setImportSummary(null)}
+                className="text-[10px] text-zinc-500 hover:text-zinc-300 transition"
+              >
+                Dismiss
+              </button>
+            </div>
+
+            <div className="grid grid-cols-2 gap-2 text-xs">
+              <div className="p-2.5 rounded-lg bg-emerald-950/60 border border-emerald-800/80 flex items-center justify-between">
+                <span className="text-emerald-300 font-medium flex items-center gap-1.5">
+                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                  Stored in IndexedDB
+                </span>
+                <span className="font-mono font-bold text-emerald-300">
+                  {importSummary.successCount}
+                </span>
+              </div>
+
+              <div className="p-2.5 rounded-lg bg-amber-950/60 border border-amber-800/80 flex items-center justify-between">
+                <span className="text-amber-300 font-medium flex items-center gap-1.5">
+                  <AlertCircle className="w-3.5 h-3.5 text-amber-400" />
+                  Skipped / Failed
+                </span>
+                <span className="font-mono font-bold text-amber-300">
+                  {importSummary.failedFiles.length}
+                </span>
+              </div>
+            </div>
+
+            {/* Failure Details Breakdown & Retry */}
+            {importSummary.failedFiles.length > 0 && (
+              <div className="space-y-2 pt-1">
+                <div className="flex items-center justify-between text-[11px]">
+                  <button
+                    onClick={() => setShowFailureDetails(!showFailureDetails)}
+                    className="text-amber-400 hover:text-amber-300 font-medium flex items-center gap-1 transition"
+                  >
+                    <span>{showFailureDetails ? 'Hide' : 'Show'} failure reasons ({importSummary.failedFiles.length})</span>
+                  </button>
+
+                  <button
+                    onClick={handleRetryFailed}
+                    disabled={isScanning}
+                    className="px-3 py-1 rounded-lg bg-amber-600 hover:bg-amber-500 text-zinc-950 font-bold text-xs flex items-center gap-1.5 transition active:scale-95 disabled:opacity-50"
+                  >
+                    <RefreshCw className="w-3 h-3" />
+                    <span>Retry Failed ({importSummary.failedFiles.length})</span>
+                  </button>
+                </div>
+
+                {showFailureDetails && (
+                  <div className="max-h-36 overflow-y-auto space-y-1.5 p-2.5 rounded-lg bg-zinc-950 border border-zinc-800 text-[11px] font-mono scrollbar-thin">
+                    {importSummary.failedFiles.map((item, idx) => (
+                      <div key={idx} className="flex items-start justify-between gap-2 border-b border-zinc-900 pb-1 last:border-0 last:pb-0">
+                        <span className="text-zinc-300 truncate max-w-[210px]">{item.file.name}</span>
+                        <span className="text-amber-400/90 text-[10px] shrink-0">{item.reason}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Progress Bar when reading files */}
         {isScanning && progress ? (
-          <div className="p-5 rounded-xl bg-[#0c0c0e] border border-zinc-800 text-center space-y-3 mb-5">
-            <div className="relative w-8 h-8 mx-auto">
-              <Loader2 className="w-8 h-8 text-cyan-400 animate-spin" />
+          <div className="p-5 rounded-xl bg-[#0c0c0e] border border-cyan-900/60 text-center space-y-3 mb-5 shadow-xl">
+            <div className="relative w-9 h-9 mx-auto">
+              <Loader2 className="w-9 h-9 text-cyan-400 animate-spin" />
               <Cloud className="w-4 h-4 text-cyan-200 absolute inset-0 m-auto" />
             </div>
             <div>
-              <h4 className="text-sm font-semibold text-zinc-200">
-                Processing & Cloud-Syncing ({progress.current}/{progress.total})
+              <h4 className="text-sm font-bold text-zinc-100 flex items-center justify-center gap-2">
+                <span>Storing Audio to Local Library</span>
+                <span className="text-xs font-mono text-cyan-400 bg-cyan-950/80 border border-cyan-800/80 px-2 py-0.5 rounded-full">
+                  {progress.current}/{progress.total} ({progress.percent}%)
+                </span>
               </h4>
-              <p className="text-xs font-mono text-zinc-400 truncate max-w-xs mx-auto mt-0.5">
+              <p className="text-xs font-mono text-zinc-400 truncate max-w-xs mx-auto mt-1">
                 {progress.filename}
               </p>
-              <p className="text-[11px] text-cyan-400/90 mt-1">
-                Encoding acoustic tags & syncing to phone cloud...
+              <p className="text-[11px] text-cyan-400/90 mt-1.5 flex items-center justify-center gap-1">
+                <CheckCircle2 className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
+                <span>Saving binary blobs directly to IndexedDB local storage</span>
               </p>
             </div>
-            <div className="w-full bg-zinc-800 rounded-full h-2 overflow-hidden">
+            <div className="w-full bg-zinc-800/90 rounded-full h-2.5 overflow-hidden p-0.5 border border-zinc-700/60">
               <div
-                className="bg-gradient-to-r from-cyan-500 to-orange-500 h-full transition-all duration-150"
-                style={{ width: `${progress.percent}%` }}
+                className="bg-gradient-to-r from-cyan-500 via-sky-400 to-orange-500 h-full rounded-full transition-all duration-150 shadow-sm"
+                style={{ width: `${Math.min(100, Math.max(2, progress.percent))}%` }}
               />
             </div>
           </div>
@@ -198,7 +297,7 @@ export const FileUploadModal: React.FC<FileUploadModalProps> = ({
                   Scan Music Folder
                 </span>
                 <span className="text-xs text-zinc-400 mt-0.5">
-                  Import entire folder & sync to phone
+                  Import entire folder locally to IndexedDB
                 </span>
               </button>
 
@@ -213,7 +312,7 @@ export const FileUploadModal: React.FC<FileUploadModalProps> = ({
                   Select Audio Files
                 </span>
                 <span className="text-xs text-zinc-400 mt-0.5">
-                  Pick individual tracks to upload
+                  Pick individual tracks to store
                 </span>
               </button>
             </div>
@@ -246,7 +345,7 @@ export const FileUploadModal: React.FC<FileUploadModalProps> = ({
 
         {/* Sync Note */}
         <p className="text-[11px] text-zinc-500 text-center leading-relaxed">
-          Uploaded audio tracks are preserved in studio storage and automatically synchronized so your phone displays them for immediate streaming.
+          Uploaded audio tracks are preserved in browser storage and can be backed up to the studio cloud at any time.
         </p>
       </div>
     </div>

@@ -41,35 +41,68 @@ class OfflineStorage {
 
   // --- Audio Blobs ---
   async saveAudioBlob(trackId: string, blob: Blob): Promise<void> {
+    if (!trackId || !blob) return;
+    const pureBlob = blob.slice(0, blob.size, blob.type || 'audio/mpeg');
     const db = await this.openDB();
     return new Promise((resolve, reject) => {
       const tx = db.transaction('audio_blobs', 'readwrite');
       const store = tx.objectStore('audio_blobs');
-      const req = store.put(blob, trackId);
+      const req = store.put(pureBlob, trackId);
       req.onsuccess = () => resolve();
       req.onerror = () => reject(req.error);
     });
   }
 
   async getAudioBlob(trackId: string): Promise<Blob | null> {
+    if (!trackId) return null;
     const db = await this.openDB();
-    return new Promise((resolve, reject) => {
-      const tx = db.transaction('audio_blobs', 'readonly');
-      const store = tx.objectStore('audio_blobs');
-      const req = store.get(trackId);
-      req.onsuccess = () => resolve(req.result || null);
-      req.onerror = () => reject(req.error);
-    });
+    const tryKey = (key: string): Promise<Blob | null> => {
+      return new Promise((resolve) => {
+        const tx = db.transaction('audio_blobs', 'readonly');
+        const store = tx.objectStore('audio_blobs');
+        const req = store.get(key);
+        req.onsuccess = () => resolve(req.result || null);
+        req.onerror = () => resolve(null);
+      });
+    };
+
+    let result = await tryKey(trackId);
+    if (!result && trackId.startsWith('cloud-')) {
+      result = await tryKey(trackId.replace(/^cloud-/, ''));
+    }
+    if (!result && !trackId.startsWith('cloud-')) {
+      result = await tryKey(`cloud-${trackId}`);
+    }
+    return result;
+  }
+
+  async getAudioBlobForTrack(track: Partial<Track>): Promise<Blob | null> {
+    if (!track) return null;
+    if (track.blobId) {
+      const b = await this.getAudioBlob(track.blobId).catch(() => null);
+      if (b) return b;
+    }
+    if (track.id) {
+      const b = await this.getAudioBlob(track.id).catch(() => null);
+      if (b) return b;
+    }
+    return null;
   }
 
   async deleteAudioBlob(trackId: string): Promise<void> {
+    if (!trackId) return;
     const db = await this.openDB();
     return new Promise((resolve, reject) => {
       const tx = db.transaction('audio_blobs', 'readwrite');
       const store = tx.objectStore('audio_blobs');
-      const req = store.delete(trackId);
-      req.onsuccess = () => resolve();
-      req.onerror = () => reject(req.error);
+      store.delete(trackId);
+      if (trackId.startsWith('cloud-')) {
+        store.delete(trackId.replace(/^cloud-/, ''));
+      } else {
+        store.delete(`cloud-${trackId}`);
+      }
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
     });
   }
 
@@ -79,6 +112,18 @@ class OfflineStorage {
     return new Promise((resolve, reject) => {
       const tx = db.transaction('tracks', 'readwrite');
       const store = tx.objectStore('tracks');
+      tracks.forEach((track) => store.put(track));
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  }
+
+  async replaceTracks(tracks: Track[]): Promise<void> {
+    const db = await this.openDB();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction('tracks', 'readwrite');
+      const store = tx.objectStore('tracks');
+      store.clear();
       tracks.forEach((track) => store.put(track));
       tx.oncomplete = () => resolve();
       tx.onerror = () => reject(tx.error);
@@ -241,6 +286,36 @@ class OfflineStorage {
       quotaBytes,
       offlineTracksCount: offlineCount,
     };
+  }
+
+  async cleanupOrphanedBlobs(): Promise<number> {
+    const db = await this.openDB();
+    const tracks = await this.getAllTracks();
+    const validBlobIds = new Set<string>();
+    tracks.forEach((t) => {
+      if (t.blobId) validBlobIds.add(t.blobId);
+      if (t.id) validBlobIds.add(t.id);
+    });
+
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction('audio_blobs', 'readwrite');
+      const store = tx.objectStore('audio_blobs');
+      const req = store.getAllKeys();
+      req.onsuccess = () => {
+        const keys = req.result || [];
+        let deletedCount = 0;
+        for (const key of keys) {
+          const keyStr = String(key);
+          if (!validBlobIds.has(keyStr) && !validBlobIds.has(keyStr.replace(/^cloud-/, '')) && !validBlobIds.has(`cloud-${keyStr}`)) {
+            store.delete(key);
+            deletedCount++;
+          }
+        }
+        tx.oncomplete = () => resolve(deletedCount);
+        tx.onerror = () => reject(tx.error);
+      };
+      req.onerror = () => reject(req.error);
+    });
   }
 }
 

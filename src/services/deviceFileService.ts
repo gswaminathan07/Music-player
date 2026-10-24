@@ -29,6 +29,11 @@ export const isMobileDevice = (): boolean => {
 const AUDIO_ACCEPT_TYPES =
   'audio/*,audio/mpeg,audio/mp3,audio/flac,audio/x-flac,audio/wav,audio/x-wav,audio/m4a,audio/x-m4a,audio/aac,audio/ogg,audio/opus,.mp3,.flac,.wav,.m4a,.aac,.ogg,.opus,.aiff,.alac,.wma';
 
+export interface ProcessResult {
+  successTracks: Track[];
+  failedFiles: Array<{ file: File; reason: string }>;
+}
+
 class DeviceFileService {
   /**
    * Prompts user to select audio files from device storage using native file picker.
@@ -280,25 +285,55 @@ class DeviceFileService {
   }
 
   /**
-   * Reads and processes device audio files, generating tracks and storing them locally in IndexedDB.
-   * Optimized for instant execution on Android phones with fast duration probing.
+   * Reads and processes device audio files, storing binary blobs locally in IndexedDB.
+   * Returns a ProcessResult containing success tracks and an array of failed/skipped files with reasons.
    */
   async processDeviceFiles(
     files: File[],
-    onProgress?: (progress: ScanProgress) => void
-  ): Promise<Track[]> {
-    if (!files || files.length === 0) return [];
+    onProgress?: (progress: ScanProgress) => void,
+    existingTracks: Track[] = []
+  ): Promise<ProcessResult> {
+    if (!files || files.length === 0) {
+      return { successTracks: [], failedFiles: [] };
+    }
 
-    // Filter audio files, with fallback to all files if user selected via audio picker
+    const failedFiles: Array<{ file: File; reason: string }> = [];
+    const norm = (s?: string) => (s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+
+    // Build existing track key set for exact file deduplication
+    const existingFileSet = new Set<string>();
+    existingTracks.forEach((t) => {
+      const fileKey = `${(t.title || '').toLowerCase().trim()}::${t.fileSize || 0}::${t.duration || 0}`;
+      if (fileKey && fileKey !== '::::0') existingFileSet.add(fileKey);
+    });
+
+    // Fetch latest cloud tracks map (use cache if offline to prevent network timeout)
+    const existingCloudTracks = (typeof navigator !== 'undefined' && !navigator.onLine)
+      ? cloudSyncService.getCachedCloudTracks()
+      : await cloudSyncService.fetchCloudTracks().catch(() => cloudSyncService.getCachedCloudTracks());
+    const existingCloudMap = new Map<string, Track>();
+    existingCloudTracks.forEach((ct) => {
+      const normKey = `${(ct.title || '').toLowerCase().trim()}::${(ct.artist || '').toLowerCase().trim()}`;
+      if (normKey && normKey !== '::') {
+        existingCloudMap.set(normKey, ct);
+      }
+    });
+
     let validFiles = files.filter((f) => this.isAudio(f));
     if (validFiles.length === 0 && files.length > 0) {
-      // User selected files via audio picker, treat all as valid
       validFiles = files;
     }
 
-    if (validFiles.length === 0) return [];
+    // Record non-audio files as failed/skipped
+    files.forEach((f) => {
+      if (!this.isAudio(f) && !validFiles.includes(f)) {
+        failedFiles.push({ file: f, reason: 'Unsupported non-audio file format' });
+      }
+    });
 
-    const newTracks: Track[] = [];
+    if (validFiles.length === 0) {
+      return { successTracks: [], failedFiles };
+    }
 
     const gradients = [
       'from-violet-600 via-indigo-600 to-sky-600',
@@ -310,6 +345,8 @@ class DeviceFileService {
       'from-fuchsia-600 via-purple-700 to-slate-900',
       'from-teal-500 via-emerald-600 to-blue-800',
     ];
+
+    const successTracks: Track[] = [];
 
     for (let i = 0; i < validFiles.length; i++) {
       const file = validFiles[i];
@@ -323,111 +360,85 @@ class DeviceFileService {
         });
       }
 
-      // Format & Title extraction
-      const ext = (file.name.split('.').pop()?.toUpperCase() || 'MP3') as any;
-      const meta = this.extractMetadataFromFilename(file.name);
-
-      // Read real embedded audio metadata tags (ID3v2, ID3v1, MP4, FLAC) from the audio file
-      const tags = await readAudioTags(file).catch(() => null);
-
-      const cleaned = cleanTrackMetadata(tags?.title || meta.title, tags?.artist || meta.artist, tags?.album || meta.album);
-      let title = cleaned.title;
-      let artist = cleaned.artist;
-      let album = cleaned.album || tags?.album || '';
-      const genre = tags?.genre || meta.genre;
-      let coverUrl = tags?.coverUrl;
-
-      // Online track and album identification (accurately finds official album/movie and high-res cover)
       try {
-        const identified = await identifyTrackOnline(title, artist, album);
-        if (identified) {
-          if (identified.coverUrl) coverUrl = identified.coverUrl;
-          if (identified.album) album = identified.album;
-          if (identified.artist && (!artist || artist === 'Local Artist' || artist === 'Unknown Artist')) {
-            artist = identified.artist;
-          }
-          if (identified.title && (title === 'Audio Track' || !title)) {
-            title = identified.title;
-          }
+        const ext = (file.name.split('.').pop()?.toUpperCase() || 'MP3') as any;
+        const meta = this.extractMetadataFromFilename(file.name);
+        const tags = await readAudioTags(file).catch(() => null);
+
+        const cleaned = cleanTrackMetadata(tags?.title || meta.title, tags?.artist || meta.artist, tags?.album || meta.album);
+        const title = cleaned.title || file.name.replace(/\.[^/.]+$/, '').trim();
+        const artist = cleaned.artist || 'Local Upload';
+        const album = cleaned.album || tags?.album || '';
+        const genre = tags?.genre || meta.genre;
+        const coverUrl = tags?.coverUrl;
+
+        const normKey = `${norm(title)}::${norm(artist)}`;
+        const exactFileKey = `${title.toLowerCase().trim()}::${file.size}::${Math.round(file.size / 32768)}`;
+
+        // Skip ONLY if exact file with same size and title already exists in library
+        if (existingFileSet.has(exactFileKey)) {
+          failedFiles.push({ file, reason: `Skipped: "${title}" already exists in library` });
+          continue;
         }
-      } catch {
-        // Fallback to fetchCoverArtForTrack
+
+        const existingTrackMatch = existingTracks.find(
+          (t) => `${(t.title || '').toLowerCase().trim()}::${t.fileSize || 0}` === `${title.toLowerCase().trim()}::${file.size}`
+        );
+
+        const existingMatch = existingCloudMap.get(normKey);
+        const trackId = existingTrackMatch?.blobId || existingMatch?.id || `track-${Date.now()}-${i}-${Math.random().toString(36).substring(2, 7)}`;
+        const localAudioUrl = existingTrackMatch?.audioUrl?.startsWith('blob:') ? existingTrackMatch.audioUrl : URL.createObjectURL(file);
+        const duration = existingTrackMatch?.duration || await this.probeAudioDuration(localAudioUrl, file.size);
+        const gradient = existingTrackMatch?.coverGradient || gradients[i % gradients.length];
+
+        // Save audio binary blob locally in browser IndexedDB only if not already stored
+        if (!existingTrackMatch || !existingTrackMatch.blobId) {
+          await offlineStorage.saveAudioBlob(trackId, file);
+        }
+
+        const localTrack: Track = {
+          id: trackId,
+          title,
+          artist,
+          album,
+          duration,
+          genre,
+          mood: meta.mood,
+          bpm: meta.bpm,
+          coverGradient: gradient,
+          coverUrl: existingTrackMatch?.coverUrl || coverUrl,
+          audioUrl: localAudioUrl,
+          isLocal: true,
+          isOfflineAvailable: true,
+          isCloudSynced: Boolean(existingMatch || existingTrackMatch?.isCloudSynced),
+          uploadedAt: existingTrackMatch?.uploadedAt || Date.now(),
+          format: ext,
+          bitrate: ext === 'FLAC' || ext === 'WAV' ? 'Lossless Hi-Res' : '320 kbps',
+          fileSize: file.size,
+          playCount: existingTrackMatch?.playCount || 0,
+          liked: existingTrackMatch?.liked || false,
+          blobId: trackId,
+          vibeSummary: meta.vibeSummary,
+        };
+
+        successTracks.push(localTrack);
+        existingFileSet.add(exactFileKey);
+      } catch (fileErr: any) {
+        failedFiles.push({
+          file,
+          reason: `Failed to store: ${fileErr?.message || 'Storage error or corrupt file'}`,
+        });
       }
-
-      if (!coverUrl) {
-        coverUrl = await fetchCoverArtForTrack(title, artist, album, genre);
-      }
-
-      const trackId = `track-${Date.now()}-${i}-${Math.random().toString(36).substring(2, 7)}`;
-
-      // Save blob to local IndexedDB storage for offline playback
-      await offlineStorage.saveAudioBlob(trackId, file).catch((err) => {
-        console.warn('Could not save blob to IndexedDB:', err);
-      });
-
-      // Create local object URL for instant playback
-      const localAudioUrl = URL.createObjectURL(file);
-
-      // Fast duration probing (with file size fallback for speed)
-      const duration = await this.probeAudioDuration(localAudioUrl, file.size);
-
-      const gradient = gradients[i % gradients.length];
-
-      // Upload audio file to Cloud Storage so it appears automatically on mobile phones & other devices
-      const cloudUploadResult = await cloudSyncService.uploadAudioFile(file, {
-        id: trackId,
-        title,
-        artist,
-        album,
-        duration,
-        genre,
-        mood: meta.mood,
-        coverUrl,
-        format: ext,
-      }).catch(() => null);
-
-      const finalAudioUrl = cloudUploadResult?.audioUrl || localAudioUrl;
-      const finalTrackId = cloudUploadResult?.id || trackId;
-
-      // If cloud track id differs, ensure blob is stored under final id as well
-      if (finalTrackId !== trackId) {
-        await offlineStorage.saveAudioBlob(finalTrackId, file).catch(() => {});
-      }
-
-      const newTrack: Track = {
-        id: finalTrackId,
-        title: cloudUploadResult?.title || title,
-        artist: cloudUploadResult?.artist || artist,
-        album: cloudUploadResult?.album || album,
-        duration,
-        genre: cloudUploadResult?.genre || genre,
-        mood: cloudUploadResult?.mood || meta.mood,
-        bpm: meta.bpm,
-        coverGradient: gradient,
-        coverUrl,
-        audioUrl: finalAudioUrl,
-        isLocal: false,
-        isOfflineAvailable: true,
-        isCloudSynced: true,
-        uploadedAt: Date.now(),
-        format: ext,
-        bitrate: ext === 'FLAC' || ext === 'WAV' ? 'Lossless Hi-Res' : '320 kbps',
-        fileSize: file.size,
-        playCount: 0,
-        liked: false,
-        blobId: finalTrackId,
-        vibeSummary: meta.vibeSummary,
-      };
-
-      newTracks.push(newTrack);
     }
 
-    // Persist all new tracks in IndexedDB
-    await offlineStorage.saveTracks(newTracks).catch((err) => {
-      console.warn('Could not save tracks to IndexedDB:', err);
-    });
+    // Persist all successfully stored tracks in IndexedDB
+    if (successTracks.length > 0) {
+      await offlineStorage.saveTracks(successTracks).catch((err) => {
+        console.warn('Could not save tracks to IndexedDB:', err);
+      });
+    }
 
-    return newTracks;
+    return { successTracks, failedFiles };
   }
 
   private probeAudioDuration(audioUrl: string, fileSize: number): Promise<number> {
@@ -438,13 +449,21 @@ class DeviceFileService {
       const audio = new Audio();
       let resolved = false;
 
+      const cleanup = () => {
+        try {
+          audio.pause();
+          audio.removeAttribute('src');
+          audio.load();
+        } catch {}
+      };
+
       const timer = setTimeout(() => {
         if (!resolved) {
           resolved = true;
-          audio.src = '';
+          cleanup();
           resolve(estimatedSecs);
         }
-      }, 350); // Fast 350ms timeout for snappy mobile experience
+      }, 500); // 500ms safety timeout for duration probing
 
       audio.addEventListener(
         'loadedmetadata',
@@ -453,7 +472,7 @@ class DeviceFileService {
             resolved = true;
             clearTimeout(timer);
             const dur = Math.round(audio.duration);
-            audio.src = '';
+            cleanup();
             resolve(Number.isFinite(dur) && dur > 0 ? dur : estimatedSecs);
           }
         },
@@ -466,7 +485,7 @@ class DeviceFileService {
           if (!resolved) {
             resolved = true;
             clearTimeout(timer);
-            audio.src = '';
+            cleanup();
             resolve(estimatedSecs);
           }
         },

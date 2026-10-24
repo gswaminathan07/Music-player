@@ -19,12 +19,16 @@ import {
   Moon,
   ShieldCheck,
   Mic2,
+  Cloud,
+  HardDrive,
+  Loader2,
 } from 'lucide-react';
 import { Track, UserPreferences, EqualizerSettings } from '../types/music';
 import { PixelTurntableWidget } from './PixelTurntableWidget';
 import { PixelNotificationWidget } from './PixelNotificationWidget';
 import { usePWAInstall } from '../hooks/usePWAInstall';
 import { lyricsService } from '../services/lyricsService';
+import { offlineStorage } from '../services/offlineStorage';
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -49,6 +53,7 @@ interface SettingsModalProps {
   equalizer: EqualizerSettings;
   onOpenUpload: () => void;
   onClearLibrary: () => void;
+  onOpenCloudSync?: () => void;
 }
 
 export const SettingsModal: React.FC<SettingsModalProps> = ({
@@ -74,11 +79,34 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   equalizer,
   onOpenUpload,
   onClearLibrary,
+  onOpenCloudSync,
 }) => {
   const { isInstallable, isInstalled, install } = usePWAInstall();
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'widgets' | 'install' | 'audio' | 'general'>('widgets');
   const [lyricOffset, setLyricOffset] = useState<number>(0);
+  const [storageUsage, setStorageUsage] = useState<{ usedBytes: number; quotaBytes: number; offlineTracksCount: number } | null>(null);
+  const [isCleaning, setIsCleaning] = useState(false);
+
+  React.useEffect(() => {
+    if (isOpen) {
+      offlineStorage.getStorageUsage().then(setStorageUsage).catch(() => {});
+    }
+  }, [isOpen]);
+
+  const handleCleanStorage = async () => {
+    setIsCleaning(true);
+    try {
+      const removed = await offlineStorage.cleanupOrphanedBlobs();
+      const usage = await offlineStorage.getStorageUsage();
+      setStorageUsage(usage);
+      showToast(`Cleaned ${removed} duplicate files. Storage optimized!`);
+    } catch {
+      showToast('Storage cleanup failed.');
+    } finally {
+      setIsCleaning(false);
+    }
+  };
 
   // Load persisted lyric sync offset whenever currentTrack changes
   React.useEffect(() => {
@@ -586,6 +614,56 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 >
                   Access Files
                 </button>
+              </div>
+
+              {/* Cloud Sync & Backup */}
+              <div className="flex items-center justify-between p-3.5 rounded-2xl bg-white/5 border border-white/5">
+                <div className="flex items-center gap-2.5">
+                  <Cloud className="w-4 h-4 text-cyan-400" />
+                  <div>
+                    <span className="text-xs font-bold text-white block">Cloud Sync & Backup</span>
+                    <span className="text-[10px] text-zinc-400">
+                      Sync local tracks to cloud or sync library across devices
+                    </span>
+                  </div>
+                </div>
+                {onOpenCloudSync && (
+                  <button
+                    onClick={() => {
+                      onClose();
+                      onOpenCloudSync();
+                    }}
+                    className="px-3 py-1.5 rounded-xl bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-bold transition"
+                  >
+                    Open Sync
+                  </button>
+                )}
+              </div>
+
+              {/* Storage Cleanup & Optimization */}
+              <div className="p-3.5 rounded-2xl bg-white/5 border border-white/5 space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2.5">
+                    <HardDrive className="w-4 h-4 text-orange-400" />
+                    <div>
+                      <span className="text-xs font-bold text-white block">Storage & Duplicate Clean</span>
+                      <span className="text-[10px] text-zinc-400">
+                        {storageUsage ? `${(storageUsage.usedBytes / (1024 * 1024 * 1024)).toFixed(2)} GB used • ${storageUsage.offlineTracksCount} offline tracks` : 'Calculating storage...'}
+                      </span>
+                    </div>
+                  </div>
+                  <button
+                    onClick={handleCleanStorage}
+                    disabled={isCleaning}
+                    className="px-3 py-1.5 rounded-xl bg-orange-500 hover:bg-orange-400 text-zinc-950 font-bold text-xs flex items-center gap-1.5 transition disabled:opacity-50"
+                  >
+                    {isCleaning ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
+                    <span>Clean Storage</span>
+                  </button>
+                </div>
+                <p className="text-[10px] text-zinc-400 leading-relaxed">
+                  Removes duplicate backup blobs created during previous imports, instantly reclaiming disk space while keeping your music tracks intact.
+                </p>
               </div>
 
               {/* Clear library / Reset */}

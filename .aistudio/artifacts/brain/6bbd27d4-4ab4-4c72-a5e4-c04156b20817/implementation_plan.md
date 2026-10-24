@@ -1,73 +1,103 @@
-# Implementation Plan: Master Console 3-Column Layout, Minimalist Header & Instant Cache Busting
+# FileUploadModal Progress Summary & Re-Import Failure Recovery
 
-Restructure the Master Console into a clean, minimalistic 3-column desktop layout (Karaoke on the left, Platter & high-framerate Analyzer in the center, Queue on the right), slim down the top bar by removing duplicate song info, eliminate the oscilloscope trace, enhance lyrics search for hits like P.Y.T., and ensure client browsers receive updates immediately via network-first caching.
+A detailed import progress summary and failure recovery system inside `FileUploadModal` that reports exact IndexedDB storage success vs failure counts, lists detailed failure reasons, automatically skips duplicate tracks, and provides a 'Retry Failed' action.
 
-## User Review Required
+## User Review & Critical Decisions
 
 > [!IMPORTANT]
-> - **Top Bar Redesign**: The top bar in the Master Console will be slimmed down to an ultra-compact toolbar (minimize button, compact format badge, EQ and share buttons), removing the duplicate track title and artist.
-> - **Layout Structure**: 
->   - **Desktop**: Left column: Live Karaoke & Lyrics; Center column: Turntable Platter & 60 FPS Peak Analyzer; Right column: Up Next Playback Queue.
->   - **Mobile**: Responsive single-column view auto-scaled so the platter, analyzer, and docked lyrics fit comfortably on screen without vertical scrolling.
-> - **Cache Busting**: Update `sw.js` and `index.html` to enforce Network-First fetching on all application scripts and pages, clearing stale cached bundles automatically.
+> Confirmed user choices for this update:
+> - **Library Behavior**: Append new unique tracks and preserve existing 295 stored tracks in IndexedDB.
+> - **Failure Visibility**: Display live success counter, detailed failure reason list, and a prominent 'Retry Failed' button.
+> - **Duplicate Handling**: Automatically skip duplicate track titles and artists during re-import and retry loops.
 
 ---
 
-## Proposed Changes
+## 1. Overview & Core Concept
 
-### 1. Service Worker & Instant Update Cache Busting
-#### `public/sw.js` & `index.html`
-- Bump service worker cache name to `vettify-v3-live`.
-- Switch strategy for navigational documents (`/`, `index.html`) and application scripts/styles from cache-first to **Network-First** with stale-while-revalidate fallback for offline mode.
-- In `activate` event, immediately purge all older static caches and call `self.clients.claim()`.
-- Add an automatic reload trigger when a new service worker takes control.
+When users import large audio folders (e.g., 423 MP3/M4A files), some files may be skipped or fail due to unreadable ID3 tags, corrupted binary blobs, or non-audio formats. 
 
----
-
-### 2. FullScreenPlayer Top Bar & Layout Redesign
-#### `src/components/FullScreenPlayer.tsx`
-- **Slim Header Bar**:
-  - Remove the large central song title and artist lines from the top bar.
-  - Convert the top bar into a sleek 36px-high utility bar with:
-    - Left: Down chevron icon + subtle "STUDIO CONSOLE" tag.
-    - Right: 10-Band EQ button, Share button, and Close button.
-- **Remove Oscilloscope Trace**:
-  - Verify and guarantee no oscilloscope waveform renders beneath the spectrum bars in the Peak Level Analyzer.
-- **3-Column Desktop Layout**:
-  - **Left Column**: Live interactive Karaoke & Lyrics stage with time-synced auto-scrolling, translation, romanization toggles, and click-to-seek lines.
-  - **Center Column**: Turntable Platter (`PixelTurntableWidget` master size) + 60 FPS Peak Level Analyzer (VU indicator + 42 logarithmic frequency bands).
-  - **Right Column**: Up Next Queue showing track titles, artists, durations, active playing indicator (`▶`), and click-to-play switching.
-- **Mobile Viewport Optimization**:
-  - On viewports `< 1024px`, smoothly collapse the side columns into an auto-fitting layout with segmented navigation (`Platter`, `Karaoke`, `VU Meter`, `Queue`) that prevents vertical overflow.
+This enhancement upgrades `FileUploadModal` and `deviceFileService` so that:
+1. Every file selected from the device is tracked individually during IndexedDB storage.
+2. A live **Import Progress Summary** displays:
+   - **Successfully Stored**: Count of files saved into IndexedDB (`offlineStorage.saveAudioBlob`).
+   - **Failed / Skipped**: Count of files that failed or were skipped as duplicates.
+3. A **Failure Breakdown List** details exact file names and reasons (e.g. *Duplicate track title/artist*, *Unsupported codec*, *Storage limit*).
+4. A **"Retry Failed"** button allows re-attempting failed files without re-scanning the entire folder.
 
 ---
 
-### 3. Peak Level Analyzer Frame Rate & Smoothness
-#### `src/components/AudioVisualizer.tsx`
-- Ensure the canvas render loop runs at 60 FPS via a dedicated `requestAnimationFrame` loop.
-- Optimize bar rendering calculations to eliminate layout thrashing.
-- Keep the design minimal, sharp, and pixel-crisp without clutter.
+## 2. User Experience & Visual Design
+
+### Key User Flows
+1. **Initiate Scan**: User clicks **Scan Music Folder** or **Select Audio Files** in `FileUploadModal`.
+2. **Live Progress**: A real-time progress bar shows `Processing 142 / 423 files...`.
+3. **Progress Summary Card**: Once scanning completes (or during scan), a summary card displays:
+   - `✓ 295 Tracks Stored in IndexedDB` (Green badge)
+   - `⚠️ 128 Files Skipped / Failed` (Amber badge)
+4. **Detailed Failure List**: An expandable list displays file names alongside specific failure details (e.g. *Skipped: "Song Title" already exists in library* or *Failed: Corrupt audio header*).
+5. **Retry Action**: User clicks **"Retry 128 Failed Files"** to re-attempt importing only those specific failed files into IndexedDB.
 
 ---
 
-### 4. Lyrics Service & Server-Side Search for Famous Tracks (e.g. P.Y.T.)
-#### `server.ts` & `src/services/lyricsService.ts`
-- Enhance the Google Search grounding prompt and query normalization for songs with abbreviations (e.g. "PYT" -> "Michael Jackson P.Y.T. (Pretty Young Thing)").
-- Add title aliases and normalization to handle punctuation variations (e.g., "P.Y.T.", "PYT", "P. Y. T.").
-- Ensure that when the client requests lyrics for "PYT" or "Vinmeen", the server accurately retrieves and time-syncs the lyrics.
+## 3. Key Product Decisions & Trade-Offs
+
+- **Decision 1: Detailed Result Object for `processDeviceFiles`**
+  - *Approach*: Upgrade `processDeviceFiles` to return `{ successTracks: Track[], failedFiles: Array<{ file: File; reason: string }> }`.
+  - *Why*: Allows `FileUploadModal` to isolate failed files and provide precise feedback rather than silent drops.
+
+- **Decision 2: Automatic Duplicate Filter**
+  - *Approach*: Normalize title and artist (`norm(title)::norm(artist)`) and check against `tracks` state before saving to IndexedDB.
+  - *Why*: Prevents creating identical track entries when users re-scan their music folder to fetch missing songs.
 
 ---
 
-## Verification Plan
+## 4. Technical Architecture & Data Strategy
 
-### Automated Tests & Compiles
-- Run `npm run lint` (`tsc --noEmit`) to verify zero TypeScript errors.
-- Run `compile_applet` (`vite build`) to verify the production bundle builds cleanly.
+```
+┌────────────────────────────────────────────────────────────────────────┐
+│                          FileUploadModal UI                            │
+├────────────────────────────────────────────────────────────────────────┤
+│  ┌───────────────────────┐              ┌───────────────────────────┐  │
+│  │ Scan Music Folder     │              │ Select Audio Files        │  │
+│  └───────────┬───────────┘              └─────────────┬─────────────┘  │
+└──────────────┼────────────────────────────────────────┼────────────────┘
+               │                                        │
+               ▼                                        ▼
+┌────────────────────────────────────────────────────────────────────────┐
+│              deviceFileService.processDeviceFiles                     │
+│  1. Extract ID3 metadata / filename title & artist                     │
+│  2. Deduplicate check against existing library tracks                   │
+│  3. Save binary Blob to IndexedDB (offlineStorage.saveAudioBlob)       │
+└──────────────┬────────────────────────────────────────┬────────────────┘
+               │                                        │
+               ▼                                        ▼
+┌──────────────────────────────┐        ┌────────────────────────────────┐
+│ Success Buffer               │        │ Failure Buffer                 │
+│ (Track objects)              │        │ ({ file: File, reason: string})│
+└──────────────┬───────────────┘        └───────────────┬────────────────┘
+               │                                        │
+               ▼                                        ▼
+┌────────────────────────────────────────────────────────────────────────┐
+│                     FileUploadModal Summary Card                       │
+│  - "295 Saved in IndexedDB" badge                                      │
+│  - "128 Failed / Skipped" warning badge                                │
+│  - Expandable Failure Reasons list                                     │
+│  - [Retry Failed Files] button ──► Re-injects Failure Buffer to scan   │
+└────────────────────────────────────────────────────────────────────────┘
+```
 
-### Visual & Interactive Verification
-- Open the Master Console on desktop:
-  - Verify the 3-column layout: Karaoke on the left, Turntable Platter & 60 FPS Analyzer in the center, Queue on the right.
-  - Verify the top bar is slim and has no duplicate song title.
-  - Verify there is no oscilloscope trace anywhere on the screen.
-- Test playback on songs like "P.Y.T." and verify lyrics are retrieved and displayed in the Karaoke panel.
-- Inspect cache and verify that reloads load the latest code immediately.
+---
+
+## 5. Planned Changes
+
+1. **`src/services/deviceFileService.ts`**:
+   - Update `processDeviceFiles` to return `{ successTracks: Track[], failedFiles: Array<{ file: File; reason: string }> }`.
+   - Implement deduplication logic against existing tracks (`title` + `artist`).
+
+2. **`src/components/FileUploadModal.tsx`**:
+   - Add state for `importSummary`: `{ successCount: number, failedFiles: Array<{ file: File; reason: string }> }`.
+   - Add UI for progress summary badges, scrollable failure reasons list, and **"Retry Failed Files"** button.
+
+3. **`src/App.tsx`**:
+   - Pass existing `tracks` list into `FileUploadModal` for duplicate checking.
+   - Handle appended tracks state updates seamlessly.

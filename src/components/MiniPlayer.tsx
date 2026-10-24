@@ -94,6 +94,9 @@ export const MiniPlayer: React.FC<MiniPlayerProps> = ({
                     src={getHighQualityCoverUrl(currentTrack.coverUrl)}
                     alt={currentTrack.title}
                     className="w-full h-full object-cover"
+                    onError={(e) => {
+                      e.currentTarget.style.display = 'none';
+                    }}
                   />
                 ) : (
                   <div className="w-full h-full bg-[#18181b] flex items-center justify-center">

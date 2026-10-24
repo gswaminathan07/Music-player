@@ -1,18 +1,18 @@
-// Vettify Service Worker - Advanced Background Audio & Offline Audio Engine
-const STATIC_CACHE = 'vettify-static-v3-bust';
+// Vettify Service Worker - Instant PWA App Shell Caching & Background Audio Engine
+const STATIC_CACHE = 'vettify-app-shell-v8';
 const AUDIO_CACHE = 'vettify-audio-v1';
 
 const STATIC_ASSETS = [
   '/',
-  '/index.html',
   '/manifest.json',
   '/icon.svg',
   '/pwa-192.png',
   '/pwa-512.png',
   '/pwa-maskable.png',
+  '/apple-touch-icon.png',
 ];
 
-// Install: precache critical app shell and skip waiting immediately
+// Install: precache static app shell assets and activate immediately
 self.addEventListener('install', (event) => {
   self.skipWaiting();
   event.waitUntil(
@@ -24,7 +24,7 @@ self.addEventListener('install', (event) => {
   );
 });
 
-// Activate: purge all obsolete cache versions immediately and claim all clients
+// Activate: purge obsolete cache versions immediately and claim all active clients
 self.addEventListener('activate', (event) => {
   event.waitUntil(
     caches.keys().then((keys) => {
@@ -39,7 +39,7 @@ self.addEventListener('activate', (event) => {
   );
 });
 
-// Helper: check if request is for audio
+// Helper: check if request is for audio streaming
 function isAudioRequest(request) {
   const url = new URL(request.url);
   const audioExtensions = /\.(mp3|wav|ogg|flac|m4a|aac|weba)(\?.*)?$/i;
@@ -51,7 +51,7 @@ function isAudioRequest(request) {
   );
 }
 
-// Handle audio requests with HTTP 206 Range header support for Android Chrome HTML5 Audio
+// Handle audio requests with HTTP 206 Range header support for mobile HTML5 Audio
 async function handleAudioFetch(request) {
   const rangeHeader = request.headers.get('range');
   const cache = await caches.open(AUDIO_CACHE);
@@ -62,7 +62,6 @@ async function handleAudioFetch(request) {
   if (!cachedResponse) {
     try {
       const networkResponse = await fetch(request);
-      // Cache full HTTP 200 responses for future offline and background instant playback
       if (networkResponse && networkResponse.status === 200) {
         cache.put(cleanUrl, networkResponse.clone());
       }
@@ -106,48 +105,76 @@ async function handleAudioFetch(request) {
   return cachedResponse;
 }
 
-// Fetch event listener
+// Fetch event listener - Instant Launch Architecture (<300ms)
 self.addEventListener('fetch', (event) => {
-  // Pass through non-GET requests or backend server API routes
-  if (event.request.method !== 'GET' || event.request.url.includes('/api/')) {
+  const url = new URL(event.request.url);
+
+  // 1. Pass through non-GET requests or backend server API routes directly
+  if (event.request.method !== 'GET' || url.pathname.startsWith('/api/')) {
     return;
   }
 
-  // Handle audio requests
+  // 2. Audio requests (streaming or offline range requests)
   if (isAudioRequest(event.request)) {
     event.respondWith(handleAudioFetch(event.request));
     return;
   }
 
-  // Handle SPA navigation requests
-  if (event.request.mode === 'navigate') {
+  // 3. Compiled Static Bundles (/assets/*.js, /assets/*.css): Cache-First for instant execution!
+  if (url.pathname.startsWith('/assets/')) {
     event.respondWith(
-      fetch(event.request).catch(async () => {
-        const cached = await caches.match('/index.html');
-        return cached || (await caches.match('/'));
+      caches.match(event.request).then((cached) => {
+        if (cached) return cached;
+        return fetch(event.request).then((networkResponse) => {
+          if (networkResponse && networkResponse.status === 200) {
+            const clone = networkResponse.clone();
+            caches.open(STATIC_CACHE).then((c) => c.put(event.request, clone));
+          }
+          return networkResponse;
+        });
       })
     );
     return;
   }
 
-  // Network-first strategy for scripts, styles, and static assets (guarantees instant updates)
+  // 4. HTML Page Navigation: Fast Network-First with Instant Offline Cache Fallback
+  if (event.request.mode === 'navigate') {
+    event.respondWith(
+      fetch(event.request)
+        .then((response) => {
+          if (response && response.status === 200) {
+            const clone = response.clone();
+            caches.open(STATIC_CACHE).then((c) => c.put(event.request, clone));
+            return response;
+          }
+          return caches.match(event.request).then((cached) => cached || response);
+        })
+        .catch(async () => {
+          const cached = await caches.match(event.request);
+          if (cached) return cached;
+          const cachedRoot = await caches.match('/');
+          if (cachedRoot) return cachedRoot;
+          return caches.match('/index.html');
+        })
+    );
+    return;
+  }
+
+  // 5. General static assets (icons, manifest, webfonts): Stale-While-Revalidate
   event.respondWith(
-    fetch(event.request)
-      .then((networkResponse) => {
-        if (networkResponse && networkResponse.status === 200 && networkResponse.type === 'basic') {
-          const clone = networkResponse.clone();
-          caches.open(STATIC_CACHE).then((c) => c.put(event.request, clone));
-        }
-        return networkResponse;
-      })
-      .catch(async () => {
-        const cached = await caches.match(event.request);
-        if (cached) return cached;
-        if (event.request.headers.get('accept')?.includes('text/html')) {
-          return (await caches.match('/index.html')) || (await caches.match('/'));
-        }
-        return new Response('Offline', { status: 503, statusText: 'Offline' });
-      })
+    caches.match(event.request).then((cached) => {
+      const fetchPromise = fetch(event.request)
+        .then((networkResponse) => {
+          if (networkResponse && networkResponse.status === 200) {
+            const clone = networkResponse.clone();
+            caches.open(STATIC_CACHE).then((c) => c.put(event.request, clone));
+          }
+          return networkResponse;
+        })
+        .catch(() => cached);
+
+      return cached || fetchPromise;
+    })
   );
 });
 
@@ -162,7 +189,7 @@ self.addEventListener('message', (event) => {
     return;
   }
 
-  // Keep Audio Context and tab event loop active on Android
+  // Keep Audio Context and tab event loop active on mobile devices
   if (type === 'KEEP_AUDIO_ACTIVE') {
     if (event.source) {
       event.source.postMessage({
@@ -188,7 +215,5 @@ self.addEventListener('message', (event) => {
         }
       }
     });
-  } else if (type === 'SKIP_WAITING') {
-    self.skipWaiting();
   }
 });

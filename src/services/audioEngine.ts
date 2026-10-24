@@ -149,6 +149,8 @@ class AudioEngine {
   constructor() {
     this.audioElement = new Audio();
     this.audioElement.preload = 'auto';
+    this.audioElement.crossOrigin = 'anonymous';
+    this.audioElement.volume = 1.0;
     this.audioElement.setAttribute('playsinline', 'true');
     this.audioElement.setAttribute('webkit-playsinline', 'true');
 
@@ -298,10 +300,13 @@ class AudioEngine {
     if (typeof document === 'undefined') return;
 
     document.addEventListener('visibilitychange', () => {
-      if (this.getState().isPlaying) {
+      if (document.visibilityState === 'visible' && this.getState().isPlaying) {
         this.unlockAudioContext();
         if (this.audioCtx && this.audioCtx.state === 'suspended') {
           this.audioCtx.resume().catch(() => {});
+        }
+        if (this.audioElement && this.audioElement.paused && this.audioElement.src) {
+          this.audioElement.play().catch(() => {});
         }
         this.startKeepAlive();
       }
@@ -406,6 +411,9 @@ class AudioEngine {
     });
     this.audioElement.addEventListener('error', (e) => {
       console.warn('Audio element error notice:', e);
+      if (this.onErrorCallback) {
+        this.onErrorCallback(this.audioElement.src);
+      }
       this.emitState();
     });
   }
@@ -415,6 +423,7 @@ class AudioEngine {
   public onPrevCallback: (() => void) | null = null;
   public onSeekCallback: ((seconds: number) => void) | null = null;
   public onEndedCallback: (() => void) | null = null;
+  public onErrorCallback: ((src: string) => void) | null = null;
 
   private setupMediaSession() {
     if (!('mediaSession' in navigator)) return;
@@ -657,7 +666,7 @@ class AudioEngine {
 
   /**
    * Primary play method: Must execute synchronously within the user touch/click turn on mobile!
-   * Handles immediate background playback and prevents Android process freezing.
+   * Direct native & WebAudio pipeline ensures 100% audible playback on desktop & mobile.
    */
   public playTrack(url: string, startTime: number = 0) {
     if (!url) return;
@@ -668,13 +677,33 @@ class AudioEngine {
     this.ensureAudioElementInDOM();
     this.updateMediaPlaybackState('playing');
 
-    if (url.startsWith('blob:') || url.startsWith('data:')) {
-      this.audioElement.removeAttribute('crossOrigin');
+    // Unlock Web Audio immediately within the synchronous user gesture
+    this.unlockAudioContext();
+    this.initWebAudio().catch(() => {});
+    if (this.audioCtx && this.audioCtx.state === 'suspended') {
+      this.audioCtx.resume().catch(() => {});
     }
 
-    const isDifferent = this.audioElement.src !== url;
+    const targetUrl = url.startsWith('blob:') || url.startsWith('data:') || url.startsWith('http:') || url.startsWith('https:')
+      ? url
+      : (typeof window !== 'undefined' ? new URL(url, window.location.href).href : url);
+
+    const isBlob = targetUrl.startsWith('blob:') || targetUrl.startsWith('data:');
+    if (isBlob) {
+      this.audioElement.removeAttribute('crossorigin');
+    } else {
+      this.audioElement.crossOrigin = 'anonymous';
+    }
+
+    // Keep consistent volume (unmuted)
+    if (this.audioElement.volume <= 0.01) {
+      this.audioElement.volume = 1.0;
+    }
+
+    const isDifferent = this.audioElement.src !== targetUrl;
     if (isDifferent) {
-      this.audioElement.src = url;
+      this.audioElement.src = targetUrl;
+      this.audioElement.load();
     }
 
     try {
@@ -687,12 +716,6 @@ class AudioEngine {
         this.audioElement.removeEventListener('loadedmetadata', onLoaded);
       };
       this.audioElement.addEventListener('loadedmetadata', onLoaded);
-    }
-
-    // Initialize real Web Audio analyzer on all platforms
-    this.initWebAudio().catch(() => {});
-    if (this.audioCtx && this.audioCtx.state === 'suspended') {
-      this.audioCtx.resume().catch(() => {});
     }
 
     const playPromise = this.audioElement.play();
@@ -770,7 +793,13 @@ class AudioEngine {
   }
 
   public setVolume(volume: number) {
-    this.audioElement.volume = Math.max(0, Math.min(1, volume));
+    const val = Math.max(0, Math.min(1, volume));
+    this.audioElement.volume = val;
+    if (this.masterGain && this.audioCtx) {
+      try {
+        this.masterGain.gain.setValueAtTime(val, this.audioCtx.currentTime);
+      } catch {}
+    }
   }
 
   public applyEqualizer(eq: EqualizerSettings) {

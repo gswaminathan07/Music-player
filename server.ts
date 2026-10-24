@@ -21,6 +21,27 @@ if (!fs.existsSync(UPLOAD_DIR)) {
 
 const CLOUD_LIBRARY_FILE = path.join(UPLOAD_DIR, 'cloud-library.json');
 const CLOUD_STATE_FILE = path.join(UPLOAD_DIR, 'cloud-state.json');
+const CLOUD_SYNC_PROFILES_FILE = path.join(UPLOAD_DIR, 'cloud-sync-profiles.json');
+
+function loadCloudSyncProfiles(): Record<string, { profile: any; timestamp: number; syncCode?: string }> {
+  try {
+    if (fs.existsSync(CLOUD_SYNC_PROFILES_FILE)) {
+      const data = fs.readFileSync(CLOUD_SYNC_PROFILES_FILE, 'utf-8');
+      return JSON.parse(data);
+    }
+  } catch (err) {
+    console.warn('Error reading cloud-sync-profiles.json:', err);
+  }
+  return {};
+}
+
+function saveCloudSyncProfiles(store: Record<string, { profile: any; timestamp: number; syncCode?: string }>): void {
+  try {
+    fs.writeFileSync(CLOUD_SYNC_PROFILES_FILE, JSON.stringify(store, null, 2), 'utf-8');
+  } catch (err) {
+    console.error('Error writing cloud-sync-profiles.json:', err);
+  }
+}
 
 function loadCloudTracks(): any[] {
   try {
@@ -62,10 +83,20 @@ function saveCloudState(state: any): void {
   }
 }
 
-app.use(express.json({ limit: '20mb' }));
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
-// In-memory sync store for cloud sync simulation
-const cloudSyncStore: Record<string, { profile: any; timestamp: number }> = {};
+// Keep-alive health and ping endpoints for mobile app & container wake-up
+app.get('/api/health', (_req: Request, res: Response) => {
+  res.json({ status: 'ok', timestamp: Date.now() });
+});
+
+app.get('/api/ping', (_req: Request, res: Response) => {
+  res.json({ pong: true, timestamp: Date.now() });
+});
+
+// Persistent sync store for cross-device cloud sync
+const cloudSyncStore: Record<string, { profile: any; timestamp: number; syncCode?: string }> = loadCloudSyncProfiles();
 
 // Helper to clean song titles and artist names of downloader watermarks, rippers, or track numbering
 function sanitizeSongTitleAndArtist(text: string): string {
@@ -142,13 +173,31 @@ function safeParseJson(raw: string | undefined): any | null {
   return null;
 }
 
+let lastQuotaExhaustedTimestamp = 0;
+const QUOTA_COOLDOWN_MS = 60000;
+
 function isQuotaError(err: any): boolean {
   if (!err) return false;
-  const str = String(err?.message || err?.status || err || '').toLowerCase();
-  return str.includes('429') || str.includes('quota') || str.includes('resource_exhausted');
+  const str = (typeof err === 'object' ? JSON.stringify(err) : String(err?.message || err?.status || err || '')).toLowerCase();
+  const hit =
+    str.includes('429') ||
+    str.includes('quota') ||
+    str.includes('resource_exhausted') ||
+    str.includes('rate_limit');
+  if (hit) {
+    lastQuotaExhaustedTimestamp = Date.now();
+  }
+  return hit;
+}
+
+function isQuotaCooldownActive(): boolean {
+  return Date.now() - lastQuotaExhaustedTimestamp < QUOTA_COOLDOWN_MS;
 }
 
 async function generateWithGemini(prompt: string): Promise<any | null> {
+  if (isQuotaCooldownActive()) {
+    return null;
+  }
   const ai = getGenAI();
   if (!ai) return null;
 
@@ -918,10 +967,56 @@ Return only JSON.`;
 });
 
 // 6. Cross-Device Cloud Audio Storage & Full Device Synchronization
+// 6. Cross-Device Cloud Audio Storage & Full Device Synchronization
+// Directory for storing artwork images
+const COVERS_DIR = path.resolve(UPLOAD_DIR, 'covers');
+if (!fs.existsSync(COVERS_DIR)) {
+  fs.mkdirSync(COVERS_DIR, { recursive: true });
+}
+
+// Save cover art image from base64 string or binary buffer
+async function saveCoverArtImage(fileId: string, coverData: string): Promise<string | undefined> {
+  if (!coverData) return undefined;
+  if (coverData.startsWith('http://') || coverData.startsWith('https://')) {
+    return coverData;
+  }
+  if (coverData.startsWith('data:image/')) {
+    try {
+      const match = coverData.match(/^data:image\/([a-zA-Z0-9]+);base64,(.+)$/);
+      if (match) {
+        const ext = match[1] === 'jpeg' ? 'jpg' : match[1];
+        const buffer = Buffer.from(match[2], 'base64');
+        const imgName = `${fileId}.${ext}`;
+        const imgPath = path.join(COVERS_DIR, imgName);
+        await fs.promises.writeFile(imgPath, buffer);
+        return `/api/covers/${imgName}`;
+      }
+    } catch (e) {
+      console.warn('Failed to save cover art file:', e);
+    }
+  }
+  return undefined;
+}
+
+// Serve cover art files
+app.get('/api/covers/:imgName', async (req: Request, res: Response) => {
+  try {
+    const imgName = path.basename(req.params.imgName);
+    const imgPath = path.join(COVERS_DIR, imgName);
+    if (fs.existsSync(imgPath)) {
+      res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+      return res.sendFile(imgPath);
+    }
+    return res.status(404).send('Cover not found');
+  } catch {
+    return res.status(500).send('Error serving cover');
+  }
+});
+
 // Audio uploaded from laptop/desktop persists on server and streams seamlessly to mobile phones!
 app.post(
   '/api/cloud/upload',
-  express.raw({ type: () => true, limit: '150mb' }),
+  express.raw({ type: () => true, limit: '200mb' }),
   async (req: Request, res: Response) => {
     try {
       const buffer = req.body;
@@ -929,18 +1024,36 @@ app.post(
         return res.status(400).json({ error: 'No audio data received in upload payload' });
       }
 
-      const rawFileName = req.headers['x-file-name'] ? decodeURIComponent(req.headers['x-file-name'] as string) : 'audio.mp3';
-      const rawTitle = req.headers['x-title'] ? decodeURIComponent(req.headers['x-title'] as string) : '';
-      const rawArtist = req.headers['x-artist'] ? decodeURIComponent(req.headers['x-artist'] as string) : '';
-      const rawAlbum = req.headers['x-album'] ? decodeURIComponent(req.headers['x-album'] as string) : '';
-      const rawDuration = parseFloat((req.headers['x-duration'] as string) || '180');
-      const rawGenre = req.headers['x-genre'] ? decodeURIComponent(req.headers['x-genre'] as string) : 'Electronic';
-      const rawMood = req.headers['x-mood'] ? decodeURIComponent(req.headers['x-mood'] as string) : 'Chill';
-      const rawCoverUrl = req.headers['x-cover-url'] ? decodeURIComponent(req.headers['x-cover-url'] as string) : '';
-      const rawFormat = (req.headers['x-format'] as string) || 'MP3';
-      const requestedId = req.headers['x-track-id'] as string;
+      // Check query params as well as headers for metadata
+      const q = req.query as Record<string, string>;
+      const getMeta = (key: string, headerName: string, fallback = '') => {
+        if (q[key]) {
+          return typeof q[key] === 'string' ? q[key] : fallback;
+        }
+        const h = req.headers[headerName];
+        if (h) {
+          try {
+            const val = Array.isArray(h) ? h[0] : h;
+            return decodeURIComponent(val);
+          } catch {
+            return Array.isArray(h) ? h[0] : h;
+          }
+        }
+        return fallback;
+      };
 
-      const extMatch = rawFileName.match(/\.(mp3|wav|flac|m4a|ogg|aac|weba)$/i);
+      const rawFileName = getMeta('fileName', 'x-file-name', 'audio.mp3');
+      const rawTitle = getMeta('title', 'x-title', '');
+      const rawArtist = getMeta('artist', 'x-artist', '');
+      const rawAlbum = getMeta('album', 'x-album', '');
+      const rawDuration = parseFloat(getMeta('duration', 'x-duration', '180'));
+      const rawGenre = getMeta('genre', 'x-genre', 'Electronic');
+      const rawMood = getMeta('mood', 'x-mood', 'Chill');
+      const rawCoverUrl = getMeta('coverUrl', 'x-cover-url', '');
+      const rawFormat = getMeta('format', 'x-format', 'MP3');
+      const requestedId = getMeta('trackId', 'x-track-id', '');
+
+      const extMatch = rawFileName.match(/\.(mp3|wav|flac|m4a|ogg|aac|weba|opus|aiff)$/i);
       const ext = extMatch ? extMatch[1].toLowerCase() : 'mp3';
 
       const fileId = requestedId
@@ -948,13 +1061,25 @@ app.post(
         : `cloud-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
 
       const diskFileName = `${fileId}.${ext}`;
+      const tempPath = path.join(UPLOAD_DIR, `${diskFileName}.tmp`);
       const filePath = path.join(UPLOAD_DIR, diskFileName);
 
-      await fs.promises.writeFile(filePath, buffer);
+      await fs.promises.writeFile(tempPath, buffer);
+      await fs.promises.rename(tempPath, filePath);
 
-      const title = rawTitle || rawFileName.replace(/\.[^/.]+$/, '').trim();
-      const artist = rawArtist || 'Cloud Artist';
-      const album = rawAlbum || 'Cloud Uploads';
+      let title = sanitizeSongTitleAndArtist(rawTitle || rawFileName.replace(/\.[^/.]+$/, '').trim());
+      let artist = sanitizeSongTitleAndArtist(rawArtist);
+
+      if (!title) title = rawFileName.replace(/\.[^/.]+$/, '').trim();
+      if (!artist || artist.toLowerCase() === 'local artist' || artist.toLowerCase() === 'unknown artist') {
+        artist = 'Local Upload';
+      }
+
+      const album = sanitizeSongTitleAndArtist(rawAlbum) || 'Cloud Library';
+
+      // Save artwork if passed in data URL
+      const savedCover = await saveCoverArtImage(fileId, rawCoverUrl);
+      const finalCoverUrl = savedCover || (rawCoverUrl.startsWith('http') ? rawCoverUrl : undefined);
 
       // Automatically analyze international script and cultural genre
       const internationalMeta = detectInternationalMetadata(title, artist, album, rawGenre);
@@ -965,13 +1090,13 @@ app.post(
         artist,
         album,
         duration: !isNaN(rawDuration) && rawDuration > 0 ? rawDuration : 180,
-        genre: rawGenre,
-        mood: rawMood,
+        genre: rawGenre || 'Audio',
+        mood: rawMood || 'Chill',
         bpm: 118,
         format: rawFormat.toUpperCase(),
-        bitrate: '320 kbps High-Fidelity',
+        bitrate: ext === 'flac' || ext === 'wav' ? 'Lossless Hi-Res' : '320 kbps High-Fidelity',
         fileSize: buffer.length,
-        coverUrl: rawCoverUrl || undefined,
+        coverUrl: finalCoverUrl,
         coverGradient: 'from-amber-600 via-rose-700 to-indigo-950',
         audioUrl: `/api/audio/${fileId}`,
         isLocal: false,
@@ -984,9 +1109,12 @@ app.post(
         culturalGenre: internationalMeta.culturalGenre,
       };
 
-      // Add to server cloud library
+      // Add to server cloud library (deduplicate by id and title+artist)
       const existing = loadCloudTracks();
-      const filtered = existing.filter((t: any) => t.id !== fileId);
+      const normKey = (t: any) => `${(t.title || '').toLowerCase().trim()}::${(t.artist || '').toLowerCase().trim()}`;
+      const newKey = normKey(cloudTrack);
+
+      const filtered = existing.filter((t: any) => t.id !== fileId && normKey(t) !== newKey);
       filtered.unshift(cloudTrack);
       saveCloudTracks(filtered);
 
@@ -1003,6 +1131,57 @@ app.post(
   }
 );
 
+// Update/Attach JSON Track Metadata endpoint (for rich metadata + base64 artwork updates)
+app.post('/api/cloud/track-metadata', async (req: Request, res: Response) => {
+  try {
+    const { trackId, title, artist, album, genre, mood, duration, coverUrl, format, bitrate } = req.body;
+    if (!trackId) {
+      return res.status(400).json({ error: 'trackId is required' });
+    }
+
+    const existing = loadCloudTracks();
+    const index = existing.findIndex((t: any) => t.id === trackId || t.id === `cloud-${trackId}`);
+
+    if (index === -1) {
+      return res.status(404).json({ error: 'Track not found' });
+    }
+
+    const target = existing[index];
+    const cleanTitle = sanitizeSongTitleAndArtist(title) || target.title;
+    const cleanArtist = sanitizeSongTitleAndArtist(artist) || target.artist;
+    const cleanAlbum = sanitizeSongTitleAndArtist(album) || target.album;
+
+    let savedCover = target.coverUrl;
+    if (coverUrl) {
+      const imgRes = await saveCoverArtImage(target.id, coverUrl);
+      if (imgRes) savedCover = imgRes;
+      else if (coverUrl.startsWith('http')) savedCover = coverUrl;
+    }
+
+    const internationalMeta = detectInternationalMetadata(cleanTitle, cleanArtist, cleanAlbum, genre || target.genre);
+
+    existing[index] = {
+      ...target,
+      title: cleanTitle,
+      artist: cleanArtist,
+      album: cleanAlbum,
+      genre: genre || target.genre,
+      mood: mood || target.mood,
+      duration: typeof duration === 'number' && duration > 0 ? duration : target.duration,
+      coverUrl: savedCover,
+      format: format ? String(format).toUpperCase() : target.format,
+      bitrate: bitrate || target.bitrate,
+      language: internationalMeta.language,
+      culturalGenre: internationalMeta.culturalGenre,
+    };
+
+    saveCloudTracks(existing);
+    return res.json({ success: true, track: existing[index] });
+  } catch (err: any) {
+    return res.status(500).json({ error: err?.message || 'Failed to update track metadata' });
+  }
+});
+
 // Get all cloud-synced tracks (Phone calls this to display laptop/desktop uploads!)
 app.get('/api/cloud/tracks', (_req: Request, res: Response) => {
   try {
@@ -1013,7 +1192,61 @@ app.get('/api/cloud/tracks', (_req: Request, res: Response) => {
   }
 });
 
-// Delete cloud track
+// Clear all songs stored on the cloud server
+app.delete('/api/cloud/tracks', async (_req: Request, res: Response) => {
+  try {
+    const existing = loadCloudTracks();
+    const count = existing.length;
+
+    // Reset cloud library database file
+    saveCloudTracks([]);
+
+    // Delete all audio files from disk in UPLOAD_DIR
+    const files = await fs.promises.readdir(UPLOAD_DIR);
+    let deletedFiles = 0;
+    const audioExts = new Set(['.mp3', '.flac', '.wav', '.m4a', '.aac', '.ogg', '.weba']);
+
+    for (const file of files) {
+      const ext = path.extname(file).toLowerCase();
+      if (audioExts.has(ext)) {
+        await fs.promises.unlink(path.join(UPLOAD_DIR, file)).catch(() => {});
+        deletedFiles++;
+      }
+    }
+
+    // Also clear tracks from cloud-state.json while preserving user playlists/preferences
+    const currentState = loadCloudState();
+    if (currentState) {
+      saveCloudState({
+        ...currentState,
+        tracks: [],
+        lastSyncedAt: Date.now(),
+      });
+    }
+
+    // Also clear tracks from all stored cloud-sync-profiles
+    const profiles = loadCloudSyncProfiles();
+    for (const key of Object.keys(profiles)) {
+      if (profiles[key]?.profile?.tracks) {
+        profiles[key].profile.tracks = [];
+      }
+    }
+    saveCloudSyncProfiles(profiles);
+
+    console.log(`[CloudStorage] Cleared ${count} cloud tracks (${deletedFiles} audio files on disk)`);
+
+    return res.json({
+      success: true,
+      deletedCount: count || deletedFiles,
+      message: `Successfully cleared ${count || deletedFiles} cloud songs from the server.`,
+    });
+  } catch (err: any) {
+    console.error('Failed to clear cloud tracks:', err);
+    return res.status(500).json({ error: err?.message || 'Failed to clear cloud tracks from server' });
+  }
+});
+
+// Delete individual cloud track
 app.delete('/api/cloud/tracks/:id', async (req: Request, res: Response) => {
   try {
     const trackId = req.params.id;
@@ -1038,12 +1271,27 @@ app.delete('/api/cloud/tracks/:id', async (req: Request, res: Response) => {
   }
 });
 
+// OPTIONS preflight for audio streaming
+app.options('/api/audio/:fileId', (_req: Request, res: Response) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Range, Origin, Content-Type, Accept');
+  res.sendStatus(204);
+});
+
 // Stream audio with HTTP 206 Partial Content Range support for Mobile & Desktop
 app.get('/api/audio/:fileId', async (req: Request, res: Response) => {
   try {
     const fileId = req.params.fileId;
     const files = await fs.promises.readdir(UPLOAD_DIR);
-    const targetFile = files.find((f) => f.startsWith(fileId));
+    const targetFile = files.find(
+      (f) =>
+        f.startsWith(fileId + '.') ||
+        f === fileId ||
+        f.startsWith(fileId) ||
+        (fileId.startsWith('cloud-') && (f.startsWith(fileId.replace(/^cloud-/, '') + '.') || f.startsWith(fileId.replace(/^cloud-/, '')))) ||
+        (!fileId.startsWith('cloud-') && (f.startsWith(`cloud-${fileId}.`) || f.startsWith(`cloud-${fileId}`)))
+    );
 
     if (!targetFile) {
       return res.status(404).send('Audio file not found in cloud storage');
@@ -1111,7 +1359,7 @@ app.get('/api/audio/:fileId', async (req: Request, res: Response) => {
 });
 
 // OPTIONS preflight for audio streaming and cloud endpoints
-app.options(['/api/audio/:fileId', '/api/cloud/*'], (_req: Request, res: Response) => {
+app.options(['/api/audio/:fileId', '/api/cloud/*', '/api/cloud/tracks'], (_req: Request, res: Response) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, POST, DELETE, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Range, Origin, Content-Type, Accept, x-file-name, x-title, x-artist, x-album, x-duration, x-genre, x-mood, x-cover-url, x-format, x-track-id');
@@ -1145,26 +1393,131 @@ app.get('/api/cloud/sync-state', (_req: Request, res: Response) => {
   }
 });
 
-// Cloud Sync Backup & Restore with human codes
+// Cloud Sync Backup & Restore with human codes, disk persistence, and cross-device sync
 app.post('/api/sync/backup', (req: Request, res: Response) => {
   const { syncCode, profileData } = req.body;
   if (!syncCode || !profileData) {
     return res.status(400).json({ error: 'syncCode and profileData required' });
   }
-  cloudSyncStore[syncCode.toUpperCase()] = {
+
+  const rawCode = String(syncCode).trim().toUpperCase();
+  const cleanCode = rawCode.replace(/[^A-Z0-9]/g, '');
+  const entry = {
+    syncCode: rawCode,
     profile: profileData,
     timestamp: Date.now(),
   };
-  return res.json({ success: true, syncCode: syncCode.toUpperCase(), timestamp: Date.now() });
+
+  // 1. Store under original formatted code (e.g. "VET-KZAB")
+  cloudSyncStore[rawCode] = entry;
+
+  // 2. Store under alphanumeric code without hyphens (e.g. "VETKZAB")
+  if (cleanCode) {
+    cloudSyncStore[cleanCode] = entry;
+    // 3. Store without "VET" prefix (e.g. "KZAB")
+    const withoutPrefix = cleanCode.replace(/^VET/, '');
+    if (withoutPrefix) {
+      cloudSyncStore[withoutPrefix] = entry;
+    }
+  }
+
+  const currentLatest = cloudSyncStore['LATEST'];
+  const incomingTracksCount = profileData.tracks?.length || 0;
+  const currentLatestTracksCount = currentLatest?.profile?.tracks?.length || 0;
+
+  // 4. Update LATEST if no existing backup exists, or if the incoming backup has at least as many tracks
+  if (!currentLatest || incomingTracksCount >= currentLatestTracksCount) {
+    cloudSyncStore['LATEST'] = entry;
+  }
+
+  // Save to disk so backups survive container restart, sleep, and dev rebuilds
+  saveCloudSyncProfiles(cloudSyncStore);
+
+  console.log(`[CloudSync] Stored backup ${rawCode} (${profileData.playlists?.length || 0} playlists, ${incomingTracksCount} tracks)`);
+
+  // Also update cloud-state.json for automatic background playlist sync if incoming has playlists
+  if (profileData.playlists && profileData.playlists.length > 0) {
+    saveCloudState({
+      playlists: profileData.playlists || [],
+      folders: profileData.folders || [],
+      preferences: profileData.preferences || {},
+      equalizer: profileData.equalizer || {},
+      stats: profileData.stats || {},
+      tracks: profileData.tracks || [],
+      lastSyncedAt: Date.now(),
+    });
+  }
+
+  return res.json({ success: true, syncCode: rawCode, timestamp: entry.timestamp });
+});
+
+// Endpoint to check if a recent laptop backup is available for 1-tap restore on phone
+app.get('/api/sync/latest', (_req: Request, res: Response) => {
+  const latest = cloudSyncStore['LATEST'];
+  if (!latest) {
+    const cloudState = loadCloudState();
+    if (cloudState && Array.isArray(cloudState.playlists) && cloudState.playlists.length > 0) {
+      return res.json({
+        success: true,
+        hasBackup: true,
+        syncCode: 'LATEST',
+        timestamp: cloudState.lastSyncedAt || Date.now(),
+        profile: cloudState,
+        playlistsCount: cloudState.playlists.length,
+        tracksCount: cloudState.tracks?.length || 0,
+      });
+    }
+    return res.json({ success: true, hasBackup: false });
+  }
+
+  return res.json({
+    success: true,
+    hasBackup: true,
+    syncCode: latest.syncCode || 'LATEST',
+    timestamp: latest.timestamp,
+    profile: latest.profile,
+    playlistsCount: latest.profile?.playlists?.length || 0,
+    tracksCount: latest.profile?.tracks?.length || 0,
+  });
 });
 
 app.get('/api/sync/restore/:code', (req: Request, res: Response) => {
-  const code = req.params.code.toUpperCase();
-  const entry = cloudSyncStore[code];
-  if (!entry) {
-    return res.status(404).json({ error: 'Sync code not found or expired' });
+  const rawCode = String(req.params.code || '').trim().toUpperCase();
+  const clean = rawCode.replace(/[^A-Z0-9]/g, '');
+
+  let entry = cloudSyncStore[rawCode] || cloudSyncStore[clean];
+
+  if (!entry && clean) {
+    // Try adding VET- prefix if user typed just the 4 letters
+    entry = cloudSyncStore[`VET-${clean}`] || cloudSyncStore[`VET${clean}`];
   }
-  return res.json({ success: true, profile: entry.profile, timestamp: entry.timestamp });
+
+  if (!entry && clean) {
+    // Fuzzy search all stored keys
+    for (const [k, v] of Object.entries(cloudSyncStore)) {
+      if (k === 'LATEST') continue;
+      const kClean = k.replace(/[^A-Z0-9]/g, '');
+      if (kClean === clean || kClean.replace(/^VET/, '') === clean.replace(/^VET/, '')) {
+        entry = v;
+        break;
+      }
+    }
+  }
+
+  if (!entry && (clean === 'LATEST' || clean === 'LAST')) {
+    entry = cloudSyncStore['LATEST'];
+  }
+
+  if (!entry) {
+    return res.status(404).json({ error: `Sync code "${rawCode}" not found or expired. Check spelling and retry.` });
+  }
+
+  return res.json({
+    success: true,
+    profile: entry.profile,
+    syncCode: entry.syncCode || rawCode,
+    timestamp: entry.timestamp,
+  });
 });
 
 // 6. Cover Art & Track Identification endpoint (searches iTunes IN/Global & Deezer)
@@ -1517,7 +1870,7 @@ app.post('/api/lyrics/google-search', async (req: Request, res: Response) => {
 
     // 2. Try Gemini with Google Search Grounding using 'gemini-3.8-flash'
     const ai = getGenAI();
-    if (ai) {
+    if (ai && !isQuotaCooldownActive()) {
       const searchTargetTitle = expandedTitle || cleanTitle;
       const searchTargetArtist = expandedArtist || cleanArtist;
       const searchPromptQuery = `${searchTargetTitle} ${searchTargetArtist} official lyrics`.trim();
@@ -1704,23 +2057,48 @@ Return ONLY valid JSON matching this schema:
   }
 });
 
-// Setup Vite in development or static serving in production
+// Setup Vite in development or high-performance static serving from pre-compiled dist
 async function startServer() {
-  const isProd = process.env.NODE_ENV === 'production';
+  const distPath = path.resolve(__dirname, 'dist');
+  const hasDist = fs.existsSync(path.join(distPath, 'index.html'));
 
-  if (!isProd) {
+  if (hasDist) {
+    console.log('⚡ Serving pre-built production bundle from /dist for instant mobile loading (<300ms)');
+    // 1-year immutable caching for hashed chunks in /assets
+    app.use(
+      '/assets',
+      express.static(path.join(distPath, 'assets'), {
+        maxAge: '1y',
+        immutable: true,
+      })
+    );
+
+    // Root static files (manifest.json, icons, sw.js)
+    app.use(
+      express.static(distPath, {
+        setHeaders: (res, filePath) => {
+          if (filePath.endsWith('index.html') || filePath.endsWith('sw.js')) {
+            res.setHeader('Cache-Control', 'no-cache, must-revalidate');
+          } else {
+            res.setHeader('Cache-Control', 'public, max-age=86400');
+          }
+        },
+      })
+    );
+
+    // SPA routing fallback to index.html
+    app.get('*', (_req, res) => {
+      res.setHeader('Cache-Control', 'no-cache, must-revalidate');
+      res.sendFile(path.resolve(distPath, 'index.html'));
+    });
+  } else {
+    console.log('Dist not found. Launching Vite dev server middleware...');
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: 'spa',
     });
     app.use(vite.middlewares);
-  } else {
-    const distPath = path.resolve(__dirname, 'dist');
-    app.use(express.static(distPath));
-    app.get('*', (_req, res) => {
-      res.sendFile(path.resolve(distPath, 'index.html'));
-    });
   }
 
   app.listen(PORT, '0.0.0.0', () => {

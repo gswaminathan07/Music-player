@@ -9,7 +9,7 @@ export const INITIAL_PREFERENCES: UserPreferences = {
   theme: 'dark-oled',
   platformLook: 'ios',
   offlineOnlyMode: false,
-  keepScreenAwake: false,
+  keepScreenAwake: true,
 };
 
 export const INITIAL_EQUALIZER: EqualizerSettings = {

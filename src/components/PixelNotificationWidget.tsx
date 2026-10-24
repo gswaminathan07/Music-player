@@ -10,9 +10,9 @@ import {
   Headphones,
   Smartphone,
   Radio,
-  Shuffle,
   Volume2,
 } from 'lucide-react';
+import { getHighQualityCoverUrl } from '../services/coverArtService';
 
 interface PixelNotificationWidgetProps {
   currentTrack: Track | null;
@@ -133,9 +133,12 @@ export const PixelNotificationWidget: React.FC<PixelNotificationWidgetProps> = (
         >
           {currentTrack.coverUrl ? (
             <img
-              src={currentTrack.coverUrl}
+              src={getHighQualityCoverUrl(currentTrack.coverUrl)}
               alt={currentTrack.title}
               className="w-full h-full object-cover"
+              onError={(e) => {
+                e.currentTarget.style.display = 'none';
+              }}
             />
           ) : (
             <span className="text-xl">🎵</span>

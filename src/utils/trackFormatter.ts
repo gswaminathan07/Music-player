@@ -318,12 +318,54 @@ export function cleanTrackMetadata(
 /**
  * Sanitizes an existing Track object in place or returns a cleaned copy.
  */
-export function sanitizeTrack(track: Track): Track {
-  const { title, artist, album } = cleanTrackMetadata(track.title, track.artist, track.album);
+export function sanitizeTrack(track: any): Track {
+  if (!track || typeof track !== 'object') {
+    return {
+      id: `track-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`,
+      title: 'Untitled Track',
+      artist: 'Unknown Artist',
+      album: 'Single',
+      duration: 180,
+      genre: 'Electronic',
+      mood: 'Chill',
+      format: 'MP3',
+      isLocal: false,
+      isOfflineAvailable: false,
+      playCount: 0,
+      liked: false,
+    };
+  }
+
+  const rawTitle = typeof track.title === 'string' && track.title.trim() ? track.title : 'Untitled Track';
+  const rawArtist = typeof track.artist === 'string' && track.artist.trim() ? track.artist : 'Unknown Artist';
+  const rawAlbum = typeof track.album === 'string' ? track.album : '';
+  const { title, artist, album } = cleanTrackMetadata(rawTitle, rawArtist, rawAlbum);
+
+  const isLocalTrack = Boolean(
+    track.isLocal ||
+    track.blobId ||
+    (typeof track.audioUrl === 'string' && track.audioUrl.startsWith('blob:'))
+  );
+  const isOffline = Boolean(
+    track.isOfflineAvailable ||
+    isLocalTrack ||
+    track.blobId ||
+    (typeof track.audioUrl === 'string' && track.audioUrl.startsWith('blob:'))
+  );
+
   return {
     ...track,
-    title,
-    artist,
-    album: album || track.album || '',
+    id: track.id || `track-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`,
+    title: title || rawTitle,
+    artist: artist || rawArtist,
+    album: album || rawAlbum || 'Single',
+    genre: typeof track.genre === 'string' && track.genre.trim() ? track.genre : 'Electronic',
+    mood: typeof track.mood === 'string' && track.mood.trim() ? track.mood : 'Chill',
+    duration: typeof track.duration === 'number' && !isNaN(track.duration) && track.duration > 0 ? track.duration : 180,
+    format: track.format || 'MP3',
+    liked: Boolean(track.liked),
+    playCount: typeof track.playCount === 'number' && !isNaN(track.playCount) ? track.playCount : 0,
+    isLocal: isLocalTrack,
+    isOfflineAvailable: isOffline,
   };
 }
