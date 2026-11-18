@@ -118,13 +118,9 @@ type AudioEventCallback = (state: {
   progress: number;
 }) => void;
 
-const SILENT_WAV_DATA_URL =
-  'data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA';
-
 class AudioEngine {
   private audioCtx: AudioContext | null = null;
   private audioElement: HTMLAudioElement;
-  private keepAliveAudio: HTMLAudioElement | null = null;
   private preloadAudio: HTMLAudioElement | null = null;
   private sourceNode: MediaElementAudioSourceNode | null = null;
   private filters: BiquadFilterNode[] = [];
@@ -133,7 +129,11 @@ class AudioEngine {
   private spatialGain: GainNode | null = null;
   private preampGain: GainNode | null = null;
   private masterGain: GainNode | null = null;
+  private limiterNode: DynamicsCompressorNode | null = null;
   private analyser: AnalyserNode | null = null;
+
+  private isLimiterEnabled = true;
+  private currentEqualizerSettings: EqualizerSettings | null = null;
 
   private isInitialized = false;
   private isSwitchingTrack = false;
@@ -141,15 +141,12 @@ class AudioEngine {
   private listeners: Set<AudioEventCallback> = new Set();
   private blobCache: Map<string, string> = new Map();
 
-  // Background keep-alive & audio context heartbeat nodes
+  // Background keep-alive & audio context heartbeat timer
   private swKeepAliveTimer: number | null = null;
-  private webAudioKeepAliveSource: AudioBufferSourceNode | null = null;
-  private webAudioKeepAliveGain: GainNode | null = null;
 
   constructor() {
     this.audioElement = new Audio();
     this.audioElement.preload = 'auto';
-    this.audioElement.crossOrigin = 'anonymous';
     this.audioElement.volume = 1.0;
     this.audioElement.setAttribute('playsinline', 'true');
     this.audioElement.setAttribute('webkit-playsinline', 'true');
@@ -180,82 +177,12 @@ class AudioEngine {
   }
 
   private startKeepAlive() {
-    if (typeof window === 'undefined') return;
-    try {
-      if (!this.keepAliveAudio) {
-        this.keepAliveAudio = new Audio(SILENT_WAV_DATA_URL);
-        this.keepAliveAudio.loop = true;
-        this.keepAliveAudio.volume = 0.01;
-        this.keepAliveAudio.setAttribute('playsinline', 'true');
-        this.keepAliveAudio.setAttribute('webkit-playsinline', 'true');
-        if (document.body) {
-          this.keepAliveAudio.style.position = 'fixed';
-          this.keepAliveAudio.style.top = '-9999px';
-          this.keepAliveAudio.style.opacity = '0';
-          this.keepAliveAudio.style.pointerEvents = 'none';
-          document.body.appendChild(this.keepAliveAudio);
-        }
-      }
-      if (this.keepAliveAudio.paused) {
-        this.keepAliveAudio.play().catch(() => {});
-      }
-      this.startServiceWorkerHeartbeat();
-      this.startWebAudioKeepAlive();
-    } catch {
-      // Ignore keep-alive errors
-    }
+    // Pure service worker heartbeat: zero secondary audio loop contention on hardware mixer
+    this.startServiceWorkerHeartbeat();
   }
 
   private stopKeepAlive() {
-    try {
-      if (this.keepAliveAudio && !this.keepAliveAudio.paused) {
-        this.keepAliveAudio.pause();
-      }
-      this.stopServiceWorkerHeartbeat();
-      this.stopWebAudioKeepAlive();
-    } catch {
-      // Ignore
-    }
-  }
-
-  private startWebAudioKeepAlive() {
-    if (!this.audioCtx) return;
-    try {
-      if (this.audioCtx.state === 'suspended') {
-        this.audioCtx.resume().catch(() => {});
-      }
-      if (!this.webAudioKeepAliveSource) {
-        const buffer = this.audioCtx.createBuffer(1, Math.max(1, this.audioCtx.sampleRate), this.audioCtx.sampleRate);
-        const source = this.audioCtx.createBufferSource();
-        source.buffer = buffer;
-        source.loop = true;
-        const gain = this.audioCtx.createGain();
-        gain.gain.value = 0.00001; // imperceptible continuous signal keeping WebAudio thread active
-        source.connect(gain);
-        gain.connect(this.audioCtx.destination);
-        source.start();
-        this.webAudioKeepAliveSource = source;
-        this.webAudioKeepAliveGain = gain;
-      }
-    } catch {
-      // Ignore WebAudio keep-alive notice
-    }
-  }
-
-  private stopWebAudioKeepAlive() {
-    try {
-      if (this.webAudioKeepAliveSource) {
-        this.webAudioKeepAliveSource.stop();
-        this.webAudioKeepAliveSource.disconnect();
-        this.webAudioKeepAliveSource = null;
-      }
-      if (this.webAudioKeepAliveGain) {
-        this.webAudioKeepAliveGain.disconnect();
-        this.webAudioKeepAliveGain = null;
-      }
-    } catch {
-      // Ignore
-    }
+    this.stopServiceWorkerHeartbeat();
   }
 
   private startServiceWorkerHeartbeat() {
@@ -372,37 +299,18 @@ class AudioEngine {
       this.emitState();
       this.updateMediaPosition();
 
-      // Keep audio context active during background playback
-      if (this.audioCtx && this.audioCtx.state === 'suspended') {
+      // Keep audio context active during background playback if EQ is engaged
+      if (this.audioCtx && this.audioCtx.state === 'suspended' && this.currentEqualizerSettings?.enabled) {
         this.audioCtx.resume().catch(() => {});
-      }
-
-      // Early seamless transition trigger: Advance track ~0.35s before hard zero.
-      // Keeping the audio stream actively playing during handoff guarantees Android OS does NOT suspend
-      // the browser tab or revoke background audio execution.
-      if (
-        !this.hasTriggeredEndForCurrentTrack &&
-        this.audioElement.duration > 2 &&
-        this.audioElement.currentTime >= this.audioElement.duration - 0.35
-      ) {
-        this.hasTriggeredEndForCurrentTrack = true;
-        this.isSwitchingTrack = true;
-        this.updateMediaPlaybackState('playing');
-        if (this.onEndedCallback) {
-          this.onEndedCallback();
-        }
       }
     });
     this.audioElement.addEventListener('ended', () => {
-      // Fallback in case timeupdate did not fire before EOF
-      if (!this.hasTriggeredEndForCurrentTrack) {
-        this.hasTriggeredEndForCurrentTrack = true;
-        this.isSwitchingTrack = true;
-        this.updateMediaPlaybackState('playing');
-        this.emitState();
-        if (this.onEndedCallback) {
-          this.onEndedCallback();
-        }
+      this.hasTriggeredEndForCurrentTrack = true;
+      this.isSwitchingTrack = true;
+      this.updateMediaPlaybackState('playing');
+      this.emitState();
+      if (this.onEndedCallback) {
+        this.onEndedCallback();
       }
     });
     this.audioElement.addEventListener('loadedmetadata', () => {
@@ -614,6 +522,14 @@ class AudioEngine {
       this.masterGain = this.audioCtx.createGain();
       this.masterGain.gain.value = 1.0;
 
+      // Studio-Grade Soft-Knee Limiter (Eliminates digital hard clipping on heavy bass punches)
+      this.limiterNode = this.audioCtx.createDynamicsCompressor();
+      this.limiterNode.threshold.value = this.isLimiterEnabled ? -1.0 : 0.0;
+      this.limiterNode.knee.value = this.isLimiterEnabled ? 6.0 : 0.0;
+      this.limiterNode.ratio.value = this.isLimiterEnabled ? 20.0 : 1.0;
+      this.limiterNode.attack.value = 0.002; // 2ms ultra-fast transient attack
+      this.limiterNode.release.value = 0.12; // 120ms smooth recovery, zero pumping
+
       // Chain: Source -> Preamp -> EQ filters -> Bass -> Master -> Analyser -> Destination
       let lastNode: AudioNode = this.sourceNode;
       lastNode.connect(this.preampGain);
@@ -635,14 +551,12 @@ class AudioEngine {
       // Direct branch
       lastNode.connect(this.masterGain);
 
-      // Master to Analyser to Destination
-      this.masterGain.connect(this.analyser);
+      // Master -> Soft-Knee Limiter -> Analyser -> Destination
+      this.masterGain.connect(this.limiterNode);
+      this.limiterNode.connect(this.analyser);
       this.analyser.connect(this.audioCtx.destination);
 
       this.isInitialized = true;
-      if (this.getState().isPlaying) {
-        this.startWebAudioKeepAlive();
-      }
     } catch (e) {
       console.warn('Web Audio initialization notice:', e);
     }
@@ -666,7 +580,7 @@ class AudioEngine {
 
   /**
    * Primary play method: Must execute synchronously within the user touch/click turn on mobile!
-   * Direct native & WebAudio pipeline ensures 100% audible playback on desktop & mobile.
+   * Direct native & WebAudio pipeline ensures 100% audible playback on desktop & mobile with zero clicks/pops.
    */
   public playTrack(url: string, startTime: number = 0) {
     if (!url) return;
@@ -677,11 +591,14 @@ class AudioEngine {
     this.ensureAudioElementInDOM();
     this.updateMediaPlaybackState('playing');
 
-    // Unlock Web Audio immediately within the synchronous user gesture
-    this.unlockAudioContext();
-    this.initWebAudio().catch(() => {});
-    if (this.audioCtx && this.audioCtx.state === 'suspended') {
-      this.audioCtx.resume().catch(() => {});
+    // Only engage WebAudio graph if user has custom Equalizer active.
+    // Otherwise, stream directly through native hardware media pipeline (YouTube Music style).
+    if (this.currentEqualizerSettings?.enabled) {
+      this.unlockAudioContext();
+      this.initWebAudio().catch(() => {});
+      if (this.audioCtx && this.audioCtx.state === 'suspended') {
+        this.audioCtx.resume().catch(() => {});
+      }
     }
 
     const targetUrl = url.startsWith('blob:') || url.startsWith('data:') || url.startsWith('http:') || url.startsWith('https:')
@@ -703,19 +620,20 @@ class AudioEngine {
     const isDifferent = this.audioElement.src !== targetUrl;
     if (isDifferent) {
       this.audioElement.src = targetUrl;
-      this.audioElement.load();
     }
 
-    try {
-      this.audioElement.currentTime = startTime || 0;
-    } catch {
-      const onLoaded = () => {
-        try {
-          this.audioElement.currentTime = startTime || 0;
-        } catch {}
-        this.audioElement.removeEventListener('loadedmetadata', onLoaded);
-      };
-      this.audioElement.addEventListener('loadedmetadata', onLoaded);
+    if (startTime > 0.05) {
+      try {
+        this.audioElement.currentTime = startTime;
+      } catch {
+        const onLoaded = () => {
+          try {
+            this.audioElement.currentTime = startTime;
+          } catch {}
+          this.audioElement.removeEventListener('loadedmetadata', onLoaded);
+        };
+        this.audioElement.addEventListener('loadedmetadata', onLoaded);
+      }
     }
 
     const playPromise = this.audioElement.play();
@@ -762,10 +680,12 @@ class AudioEngine {
     this.isSwitchingTrack = false;
     this.startKeepAlive();
     this.ensureAudioElementInDOM();
-    this.unlockAudioContext();
-    this.initWebAudio().catch(() => {});
-    if (this.audioCtx && this.audioCtx.state === 'suspended') {
-      this.audioCtx.resume().catch(() => {});
+    if (this.currentEqualizerSettings?.enabled) {
+      this.unlockAudioContext();
+      this.initWebAudio().catch(() => {});
+      if (this.audioCtx && this.audioCtx.state === 'suspended') {
+        this.audioCtx.resume().catch(() => {});
+      }
     }
     const playPromise = this.audioElement.play();
     if (playPromise !== undefined) {
@@ -797,45 +717,118 @@ class AudioEngine {
     this.audioElement.volume = val;
     if (this.masterGain && this.audioCtx) {
       try {
-        this.masterGain.gain.setValueAtTime(val, this.audioCtx.currentTime);
+        const now = this.audioCtx.currentTime;
+        this.masterGain.gain.setTargetAtTime(val, now, 0.03);
       } catch {}
     }
   }
 
   public applyEqualizer(eq: EqualizerSettings) {
-    if (!this.isInitialized) return;
+    this.currentEqualizerSettings = eq;
+
+    // If user enabled EQ, ensure WebAudio graph is initialized
+    if (eq.enabled) {
+      this.initWebAudio().catch(() => {});
+    }
+
+    if (!this.isInitialized || !this.audioCtx) return;
 
     try {
+      const now = this.audioCtx.currentTime;
+
       if (!eq.enabled) {
-        this.filters.forEach((f) => (f.gain.value = 0));
-        if (this.bassFilter) this.bassFilter.gain.value = 0;
-        if (this.spatialGain) this.spatialGain.gain.value = 0;
-        if (this.preampGain) this.preampGain.gain.value = 1.0;
+        // Smooth transparent passthrough without digital clicks
+        this.filters.forEach((f) => f.gain.setTargetAtTime(0, now, 0.04));
+        if (this.bassFilter) this.bassFilter.gain.setTargetAtTime(0, now, 0.04);
+        if (this.spatialGain) this.spatialGain.gain.setTargetAtTime(0, now, 0.04);
+        if (this.preampGain) this.preampGain.gain.setTargetAtTime(1.0, now, 0.04);
+        if (this.limiterNode) {
+          this.limiterNode.threshold.setTargetAtTime(0.0, now, 0.04);
+          this.limiterNode.ratio.setTargetAtTime(1.0, now, 0.04);
+          this.limiterNode.knee.setTargetAtTime(0.0, now, 0.04);
+        }
         return;
       }
 
       this.filters.forEach((filter, index) => {
         const gainVal = eq.bands[index] ?? 0;
-        filter.gain.setTargetAtTime(gainVal, this.audioCtx!.currentTime, 0.05);
+        filter.gain.setTargetAtTime(gainVal, now, 0.04);
       });
 
       if (this.bassFilter) {
         const bassGain = (eq.bassBoost / 100) * 12;
-        this.bassFilter.gain.setTargetAtTime(bassGain, this.audioCtx!.currentTime, 0.05);
+        this.bassFilter.gain.setTargetAtTime(bassGain, now, 0.04);
       }
 
       if (this.spatialGain) {
         const spatialVal = (eq.spatialSurround / 100) * 0.45;
-        this.spatialGain.gain.setTargetAtTime(spatialVal, this.audioCtx!.currentTime, 0.05);
+        this.spatialGain.gain.setTargetAtTime(spatialVal, now, 0.04);
       }
 
       if (this.preampGain) {
-        const preampLinear = Math.pow(10, eq.preamp / 20);
-        this.preampGain.gain.setTargetAtTime(preampLinear, this.audioCtx!.currentTime, 0.05);
+        let maxPositiveBoost = 0;
+        eq.bands.forEach((b) => {
+          if (b > maxPositiveBoost) maxPositiveBoost = b;
+        });
+        const bassBoostGain = (eq.bassBoost / 100) * 12;
+        if (bassBoostGain > maxPositiveBoost) maxPositiveBoost = bassBoostGain;
+
+        const dynamicHeadroomDb = (this.isLimiterEnabled && maxPositiveBoost > 0)
+          ? -Math.min(9, maxPositiveBoost * 0.65)
+          : 0;
+
+        const effectivePreampDb = (eq.preamp || 0) + dynamicHeadroomDb;
+        const preampLinear = Math.pow(10, effectivePreampDb / 20);
+        this.preampGain.gain.setTargetAtTime(preampLinear, now, 0.04);
+      }
+
+      // Re-apply limiter settings
+      if (this.limiterNode) {
+        if (this.isLimiterEnabled) {
+          this.limiterNode.threshold.setTargetAtTime(-1.0, now, 0.04);
+          this.limiterNode.knee.setTargetAtTime(6.0, now, 0.04);
+          this.limiterNode.ratio.setTargetAtTime(20.0, now, 0.04);
+        } else {
+          this.limiterNode.threshold.setTargetAtTime(0.0, now, 0.04);
+          this.limiterNode.knee.setTargetAtTime(0.0, now, 0.04);
+          this.limiterNode.ratio.setTargetAtTime(1.0, now, 0.04);
+        }
       }
     } catch (e) {
       console.warn('Error applying EQ:', e);
     }
+  }
+
+  public setLimiterEnabled(enabled: boolean) {
+    this.isLimiterEnabled = enabled;
+    if (this.limiterNode && this.audioCtx) {
+      const now = this.audioCtx.currentTime;
+      if (enabled) {
+        // Active soft-knee brickwall limiter
+        this.limiterNode.threshold.setTargetAtTime(-1.0, now, 0.04);
+        this.limiterNode.knee.setTargetAtTime(6.0, now, 0.04);
+        this.limiterNode.ratio.setTargetAtTime(20.0, now, 0.04);
+      } else {
+        // Neutral unity-gain passthrough
+        this.limiterNode.threshold.setTargetAtTime(0.0, now, 0.04);
+        this.limiterNode.knee.setTargetAtTime(0.0, now, 0.04);
+        this.limiterNode.ratio.setTargetAtTime(1.0, now, 0.04);
+      }
+    }
+    // Re-calibrate dynamic headroom based on new limiter state
+    if (this.currentEqualizerSettings) {
+      this.applyEqualizer(this.currentEqualizerSettings);
+    }
+  }
+
+  public getLimiterEnabled(): boolean {
+    return this.isLimiterEnabled;
+  }
+
+  public isLimiterActive(): boolean {
+    if (!this.limiterNode || !this.isLimiterEnabled) return false;
+    // WebAudio DynamicsCompressorNode.reduction returns current gain reduction in dB
+    return typeof this.limiterNode.reduction === 'number' && this.limiterNode.reduction < -0.1;
   }
 
   public setPreset(presetName: string): EqualizerSettings | null {
@@ -929,10 +922,11 @@ class AudioEngine {
     formattedDb: string;
     leftLevel: number;
     rightLevel: number;
+    isLimiting: boolean;
   } {
     const isPlaying = this.getState().isPlaying;
     if (!isPlaying) {
-      return { peakDb: -Infinity, formattedDb: '-∞ dB', leftLevel: 0, rightLevel: 0 };
+      return { peakDb: -Infinity, formattedDb: '-∞ dB', leftLevel: 0, rightLevel: 0, isLimiting: false };
     }
 
     const { waveformData, frequencyData } = this.getVisualizerData();
@@ -953,7 +947,7 @@ class AudioEngine {
     const peakRatio = Math.max(maxAmp / 128, maxFreq / 255, rms * 1.3);
 
     if (peakRatio <= 0.02) {
-      return { peakDb: -Infinity, formattedDb: '-∞ dB', leftLevel: 0, rightLevel: 0 };
+      return { peakDb: -Infinity, formattedDb: '-∞ dB', leftLevel: 0, rightLevel: 0, isLimiting: false };
     }
 
     // Dynamic decibels calculation calibrated to true studio scale (-42 dBFS to 0 dBFS)
@@ -967,6 +961,7 @@ class AudioEngine {
       formattedDb: `${db.toFixed(1)} dB`,
       leftLevel,
       rightLevel,
+      isLimiting: this.isLimiterActive(),
     };
   }
 

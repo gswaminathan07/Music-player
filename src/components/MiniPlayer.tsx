@@ -140,7 +140,7 @@ export const MiniPlayer: React.FC<MiniPlayerProps> = ({
                     </span>
                     <span className="text-zinc-600">·</span>
                     <span className="text-[10px] font-mono text-zinc-400 uppercase shrink-0">
-                      {currentTrack.format || 'MP3'}
+                      {currentTrack.format === 'M4A' || currentTrack.format === 'AAC' ? 'M4A · AAC 256k' : currentTrack.format || 'MP3'}
                     </span>
                   </div>
                 )}

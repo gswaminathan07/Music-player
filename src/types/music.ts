@@ -24,7 +24,7 @@ export interface Track {
   isCloudSynced?: boolean; // Uploaded from laptop/device and synced across devices
   uploadedAt?: number;
   fileSize?: number;
-  format?: 'MP3' | 'FLAC' | 'WAV' | 'M4A' | 'OGG' | 'SYNTH';
+  format?: 'MP3' | 'FLAC' | 'WAV' | 'M4A' | 'AAC' | 'OGG' | 'SYNTH';
   bitrate?: string;
   playCount: number;
   lastPlayed?: number;
@@ -119,11 +119,12 @@ export interface UserPreferences {
   dailyVibe: string;
   activities: string[];
   smartShuffleMood: TrackMood | 'All';
-  audioQuality: '320kbps' | 'Lossless FLAC' | 'Master Audio';
+  audioQuality: '256kbps AAC (HQ)' | '320kbps' | 'Lossless FLAC' | 'Master Audio';
   theme: 'dark-oled' | 'dark-violet' | 'dark-cyber' | 'light';
   platformLook: 'ios' | 'android';
   offlineOnlyMode: boolean;
   keepScreenAwake?: boolean;
+  antiClippingProtection?: boolean;
 }
 
 export interface EqualizerSettings {

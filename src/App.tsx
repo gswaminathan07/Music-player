@@ -33,6 +33,7 @@ import { SettingsModal } from './components/SettingsModal';
 import { SmartPlaylistMakerModal } from './components/SmartPlaylistMakerModal';
 import { KaraokeLyricsBar } from './components/KaraokeLyricsBar';
 import { PWAInstallPrompt } from './components/PWAInstallPrompt';
+import { PeakMeterValue } from './components/PeakMeterValue';
 import {
   Play,
   Pause,
@@ -208,22 +209,7 @@ export default function App() {
   repeatModeRef.current = repeatMode;
   isSmartShuffleActiveRef.current = isSmartShuffleActive;
 
-  const [meterDb, setMeterDb] = useState<string>('-∞ dB');
 
-  useEffect(() => {
-    if (!isPlaying) {
-      setMeterDb('-∞ dB');
-      return;
-    }
-    let animId: number;
-    const updateLoop = () => {
-      // 60-120 FPS native frame rate loop for silky smooth analog meter ballistics
-      setMeterDb(audioEngine.getPeakLevelDb().formattedDb);
-      animId = requestAnimationFrame(updateLoop);
-    };
-    animId = requestAnimationFrame(updateLoop);
-    return () => cancelAnimationFrame(animId);
-  }, [isPlaying]);
 
   // Studio Theme & Accessibility
   const isLightMode = (preferences?.theme || INITIAL_PREFERENCES.theme) === 'light';
@@ -297,13 +283,18 @@ export default function App() {
         const storedEq = await offlineStorage.getKV<EqualizerSettings>('equalizer_settings').catch(() => null);
 
         if (storedPrefs && typeof storedPrefs === 'object') {
-          setPreferences({
+          const mergedPrefs = {
             ...INITIAL_PREFERENCES,
             ...storedPrefs,
             favoriteGenres: Array.isArray(storedPrefs.favoriteGenres) ? storedPrefs.favoriteGenres : INITIAL_PREFERENCES.favoriteGenres,
             activities: Array.isArray(storedPrefs.activities) ? storedPrefs.activities : INITIAL_PREFERENCES.activities,
             keepScreenAwake: storedPrefs.keepScreenAwake ?? true,
-          });
+            antiClippingProtection: storedPrefs.antiClippingProtection ?? true,
+          };
+          setPreferences(mergedPrefs);
+          audioEngine.setLimiterEnabled(mergedPrefs.antiClippingProtection);
+        } else {
+          audioEngine.setLimiterEnabled(true);
         }
         if (storedEq && typeof storedEq === 'object') {
           const validEq = {
@@ -343,8 +334,9 @@ export default function App() {
           t.isLocal = true;
           t.isOfflineAvailable = true;
 
-          // If artist was unresolved or default, extract embedded ID3 tags from file blob
+          // If artist was unresolved or cover was missing, extract embedded M4A/ID3 tags from file blob
           if (
+            !t.coverUrl ||
             !t.artist ||
             t.artist === 'Local Artist' ||
             t.artist === 'Unknown Artist' ||
@@ -353,11 +345,16 @@ export default function App() {
           ) {
             const tags = await readAudioTags(blob).catch(() => null);
             if (tags) {
-              if (tags.title) t.title = tags.title;
-              if (tags.artist) t.artist = tags.artist;
+              if (tags.title && (!t.title || t.title.includes(';'))) t.title = tags.title;
+              if (tags.artist && (!t.artist || t.artist === 'Local Artist' || t.artist === 'Unknown Artist')) t.artist = tags.artist;
               if (tags.album && (!t.album || t.album === 'Device Music')) t.album = tags.album;
               if (tags.genre && (!t.genre || t.genre === 'Electronic')) t.genre = tags.genre;
-              if (tags.coverUrl && !t.coverUrl) t.coverUrl = tags.coverUrl;
+              if (tags.coverUrl && !t.coverUrl) {
+                t.coverUrl = tags.coverUrl;
+                metadataMigrated = true;
+              }
+              if (tags.format && (!t.format || t.format === 'MP3')) t.format = tags.format as any;
+              if (tags.bitrate && (!t.bitrate || t.bitrate === '320 kbps')) t.bitrate = tags.bitrate;
               t = sanitizeTrack(t);
             }
           }
@@ -425,6 +422,19 @@ export default function App() {
         setCleanFeedback(`✨ Purged duplicate tracks and restored exact library (${activeTracks.length} tracks)!`);
         setTimeout(() => setCleanFeedback(null), 5000);
       }
+
+      // Clear stale blob URLs from previous page lifecycles
+      activeTracks.forEach((t) => {
+        if (t.audioUrl && t.audioUrl.startsWith('blob:')) {
+          t.audioUrl = '';
+        }
+      });
+      // Pre-resolve living object URLs for local/offline tracks in background
+      activeTracks.slice(0, 20).forEach((t) => {
+        if (t.blobId || t.isOfflineAvailable || t.isLocal) {
+          offlineStorage.resolveLiveAudioUrl(t).catch(() => {});
+        }
+      });
 
       setTracks(activeTracks);
       setQueue(activeTracks);
@@ -704,11 +714,10 @@ export default function App() {
       if (!current) return;
       console.warn('Audio playback error on source, attempting recovery:', failedUrl);
 
-      // 1. Try to recover local audio blob from IndexedDB
-      const blob = await offlineStorage.getAudioBlobForTrack(current).catch(() => null);
+      // 1. Try to recover local audio blob from IndexedDB with format-aware MIME normalization
+      const freshBlobUrl = await offlineStorage.resolveLiveAudioUrl(current).catch(() => null);
 
-      if (blob) {
-        const freshBlobUrl = URL.createObjectURL(blob);
+      if (freshBlobUrl && freshBlobUrl !== failedUrl) {
         current.audioUrl = freshBlobUrl;
         audioEngine.playTrack(freshBlobUrl, 0);
         return;
@@ -848,7 +857,10 @@ export default function App() {
     if (isPlaying) {
       audioEngine.pause();
     } else {
-      let url = currentTrack.audioUrl;
+      let url = offlineStorage.getLiveAudioUrlSync(currentTrack) || currentTrack.audioUrl;
+      if (url && url.startsWith('blob:') && !offlineStorage.getLiveAudioUrlSync(currentTrack)) {
+        url = '';
+      }
       if (!url) {
         if (currentTrack.id.startsWith('track-v')) {
           const vibe = currentTrack.genre.toLowerCase().includes('synth') ? 'synthwave' : 'lofi';
@@ -859,6 +871,15 @@ export default function App() {
         currentTrack.audioUrl = url;
       }
       audioEngine.playTrack(url, currentTime);
+
+      if (currentTrack.blobId || currentTrack.isLocal || currentTrack.isOfflineAvailable) {
+        offlineStorage.resolveLiveAudioUrl(currentTrack).then((freshLiveUrl) => {
+          if (freshLiveUrl && freshLiveUrl !== url && currentTrackRef.current?.id === currentTrack.id) {
+            currentTrack.audioUrl = freshLiveUrl;
+            audioEngine.playTrack(freshLiveUrl, currentTime);
+          }
+        }).catch(() => {});
+      }
     }
   };
 
@@ -892,7 +913,12 @@ export default function App() {
     // Update system lockscreen media metadata immediately
     audioEngine.updateMediaMetadata(track);
 
-    let url = track.audioUrl;
+    // Resolve living audio url: check memory cache first
+    let url = offlineStorage.getLiveAudioUrlSync(track) || track.audioUrl;
+    if (url && url.startsWith('blob:') && !offlineStorage.getLiveAudioUrlSync(track)) {
+      url = '';
+    }
+
     if (!url) {
       if (track.id.startsWith('track-v')) {
         const vibe = track.genre.toLowerCase().includes('synth')
@@ -924,11 +950,11 @@ export default function App() {
           : 'lofi';
         upcomingTrack.audioUrl = audioEngine.getProceduralTrackUrl(vibe);
         audioEngine.preloadNextTrack(upcomingTrack.audioUrl);
-      } else if (upcomingTrack.blobId && !upcomingTrack.audioUrl.startsWith('blob:')) {
-        offlineStorage.getAudioBlob(upcomingTrack.blobId).then((b) => {
-          if (b) {
-            upcomingTrack.audioUrl = URL.createObjectURL(b);
-            audioEngine.preloadNextTrack(upcomingTrack.audioUrl);
+      } else if (upcomingTrack.blobId) {
+        offlineStorage.resolveLiveAudioUrl(upcomingTrack).then((liveUrl) => {
+          if (liveUrl) {
+            upcomingTrack.audioUrl = liveUrl;
+            audioEngine.preloadNextTrack(liveUrl);
           }
         }).catch(() => {});
       } else {
@@ -936,11 +962,12 @@ export default function App() {
       }
     }
 
-    // If track has local blob, refresh in background if needed
-    if (track.blobId && !url.startsWith('blob:')) {
-      offlineStorage.getAudioBlob(track.blobId).then((blob) => {
-        if (blob) {
-          track.audioUrl = URL.createObjectURL(blob);
+    // If track has local blob, resolve fresh live object URL asynchronously and swap smoothly if needed
+    if (track.blobId || track.isLocal || track.isOfflineAvailable) {
+      offlineStorage.resolveLiveAudioUrl(track).then((freshLiveUrl) => {
+        if (freshLiveUrl && freshLiveUrl !== url && currentTrackRef.current?.id === track.id) {
+          track.audioUrl = freshLiveUrl;
+          audioEngine.playTrack(freshLiveUrl, 0);
         }
       }).catch(() => {});
     }
@@ -1461,7 +1488,9 @@ export default function App() {
                             NOW PLAYING
                           </span>
                           <span className="text-[10px] font-mono text-zinc-400 uppercase">
-                            {currentTrack?.format || 'PCM'} · {currentTrack?.bitrate || '320k'}
+                            {currentTrack?.format === 'M4A' || currentTrack?.format === 'AAC'
+                              ? 'AAC-LC (M4A) · 256k HQ'
+                              : `${currentTrack?.format || 'PCM'} · ${currentTrack?.bitrate || '320k'}`}
                           </span>
                         </div>
                         <h2 className="text-base sm:text-lg font-bold text-white truncate tracking-tight">
@@ -1560,7 +1589,7 @@ export default function App() {
                         <span className={`w-1.5 h-1.5 rounded-full ${isPlaying ? 'bg-orange-500 animate-pulse' : 'bg-zinc-600'}`} />
                         PEAK LEVEL ANALYZER · VU
                       </span>
-                      <span className="text-orange-400 font-mono text-[10px] font-bold">{isPlaying ? meterDb : '-∞ dB'}</span>
+                      <PeakMeterValue isPlaying={isPlaying} />
                     </div>
                     <AudioVisualizer mode="bars" height={32} isPlaying={isPlaying} />
                     <div className="flex justify-between text-[9px] font-mono text-zinc-500 mt-0.5 px-0.5">
@@ -2020,9 +2049,16 @@ export default function App() {
                           <span className="font-medium text-orange-400/90 truncate">
                             {track.artist}
                           </span>
-                          <span className="text-zinc-600">·</span>
-                          <span className="text-zinc-400 uppercase font-mono text-[10px] shrink-0">
-                            {track.format || 'MP3'}
+                          <span
+                            className={`uppercase font-mono text-[10px] shrink-0 font-semibold px-1 py-0.2 rounded ${
+                              track.format === 'M4A' || track.format === 'AAC'
+                                ? 'bg-cyan-500/15 text-cyan-300 border border-cyan-500/30'
+                                : track.format === 'FLAC'
+                                ? 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/30'
+                                : 'text-zinc-400'
+                            }`}
+                          >
+                            {track.format === 'M4A' || track.format === 'AAC' ? 'M4A · AAC' : track.format || 'MP3'}
                           </span>
                           <span className="text-zinc-600">·</span>
                           <span className="text-zinc-500 truncate text-[11px]">{track.genre}</span>
@@ -2114,7 +2150,7 @@ export default function App() {
                     <span className={`w-1.5 h-1.5 rounded-full ${isPlaying ? 'bg-orange-500 animate-pulse' : 'bg-zinc-600'}`} />
                     PEAK LEVEL ANALYZER · VU
                   </span>
-                  <span className="text-orange-400 font-mono text-[10px] font-bold">{isPlaying ? meterDb : '-∞ dB'}</span>
+                  <PeakMeterValue isPlaying={isPlaying} />
                 </div>
                 <AudioVisualizer mode="bars" height={36} isPlaying={isPlaying} />
                 <div className="flex justify-between text-[9px] font-mono text-zinc-500 mt-1 px-0.5">
@@ -2129,8 +2165,23 @@ export default function App() {
               {/* Technical Acoustic Specs Strip */}
               {currentTrack && (
                 <div className="mt-4 pt-3 border-t border-zinc-800/80 flex items-center justify-between text-[10px] font-mono text-zinc-400">
-                  <span>FORMAT: {currentTrack.format || 'PCM'}</span>
-                  <span>BITRATE: {currentTrack.bitrate || '320k'}</span>
+                  <span className="flex items-center gap-1">
+                    <span>FORMAT:</span>
+                    <span className="text-zinc-200 font-bold">
+                      {currentTrack.format === 'M4A' || currentTrack.format === 'AAC'
+                        ? 'AAC-LC (M4A)'
+                        : currentTrack.format || 'PCM'}
+                    </span>
+                  </span>
+                  <span className="flex items-center gap-1">
+                    <span>BITRATE:</span>
+                    <span className="text-cyan-400 font-bold">
+                      {currentTrack.bitrate ||
+                        (currentTrack.format === 'M4A' || currentTrack.format === 'AAC'
+                          ? '256k AAC'
+                          : '320k')}
+                    </span>
+                  </span>
                   <span>TIME: {formatTime(currentTime)}</span>
                 </div>
               )}
@@ -2540,6 +2591,7 @@ export default function App() {
         preferences={preferences}
         onUpdatePreferences={(p) => {
           setPreferences(p);
+          audioEngine.setLimiterEnabled(p.antiClippingProtection ?? true);
           offlineStorage.setKV('user_preferences', p);
         }}
         equalizer={equalizer}

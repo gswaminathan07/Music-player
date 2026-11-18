@@ -39,10 +39,51 @@ class OfflineStorage {
     return this.dbPromise;
   }
 
+  private liveBlobUrls: Map<string, string> = new Map();
+
+  /**
+   * Normalizes audio blob MIME type ensuring browser AAC/MP4/MP3 demuxers decode cleanly.
+   */
+  public normalizeAudioBlob(blob: Blob, trackHint?: Partial<Track>): Blob {
+    if (!blob) return blob;
+    const format = (trackHint?.format || '').toUpperCase();
+    const title = (trackHint?.title || '').toLowerCase();
+    const isM4a =
+      format === 'M4A' ||
+      format === 'AAC' ||
+      title.endsWith('.m4a') ||
+      title.endsWith('.aac') ||
+      title.endsWith('.mp4') ||
+      blob.type.includes('mp4') ||
+      blob.type.includes('m4a') ||
+      blob.type.includes('aac');
+
+    if (isM4a) {
+      return new Blob([blob], { type: 'audio/mp4' });
+    }
+    if (format === 'FLAC' || title.endsWith('.flac') || blob.type.includes('flac')) {
+      return new Blob([blob], { type: 'audio/flac' });
+    }
+    if (format === 'WAV' || title.endsWith('.wav') || blob.type.includes('wav')) {
+      return new Blob([blob], { type: 'audio/wav' });
+    }
+    if (blob.type && blob.type !== 'application/octet-stream') {
+      return blob;
+    }
+    return new Blob([blob], { type: 'audio/mpeg' });
+  }
+
   // --- Audio Blobs ---
-  async saveAudioBlob(trackId: string, blob: Blob): Promise<void> {
+  async saveAudioBlob(trackId: string, blob: Blob, trackHint?: Partial<Track>): Promise<void> {
     if (!trackId || !blob) return;
-    const pureBlob = blob.slice(0, blob.size, blob.type || 'audio/mpeg');
+    const pureBlob = this.normalizeAudioBlob(blob, trackHint);
+    
+    // Cache live blob URL for instant 0ms access in current session
+    try {
+      const liveUrl = URL.createObjectURL(pureBlob);
+      this.liveBlobUrls.set(trackId, liveUrl);
+    } catch {}
+
     const db = await this.openDB();
     return new Promise((resolve, reject) => {
       const tx = db.transaction('audio_blobs', 'readwrite');
@@ -78,19 +119,60 @@ class OfflineStorage {
 
   async getAudioBlobForTrack(track: Partial<Track>): Promise<Blob | null> {
     if (!track) return null;
+    let b: Blob | null = null;
     if (track.blobId) {
-      const b = await this.getAudioBlob(track.blobId).catch(() => null);
-      if (b) return b;
+      b = await this.getAudioBlob(track.blobId).catch(() => null);
     }
-    if (track.id) {
-      const b = await this.getAudioBlob(track.id).catch(() => null);
-      if (b) return b;
+    if (!b && track.id) {
+      b = await this.getAudioBlob(track.id).catch(() => null);
+    }
+    if (b) {
+      return this.normalizeAudioBlob(b, track);
     }
     return null;
   }
 
+  /**
+   * Retrieves a verified, living object URL for a track, or returns cached live URL.
+   */
+  public getLiveAudioUrlSync(track: Track): string | null {
+    if (!track) return null;
+    return this.liveBlobUrls.get(track.id) || (track.blobId ? this.liveBlobUrls.get(track.blobId) || null : null);
+  }
+
+  public async resolveLiveAudioUrl(track: Track): Promise<string> {
+    if (!track) return '';
+    const cached = this.getLiveAudioUrlSync(track);
+    if (cached) return cached;
+
+    if (track.blobId || track.isOfflineAvailable || track.isLocal) {
+      const blob = await this.getAudioBlobForTrack(track);
+      if (blob) {
+        const freshUrl = URL.createObjectURL(blob);
+        this.liveBlobUrls.set(track.id, freshUrl);
+        if (track.blobId) this.liveBlobUrls.set(track.blobId, freshUrl);
+        return freshUrl;
+      }
+    }
+
+    if (track.audioUrl && !track.audioUrl.startsWith('blob:')) {
+      return track.audioUrl;
+    }
+
+    if (track.id.startsWith('cloud-') || track.isCloudSynced) {
+      return `/api/audio/${track.id}`;
+    }
+
+    return track.audioUrl || '';
+  }
+
   async deleteAudioBlob(trackId: string): Promise<void> {
     if (!trackId) return;
+    const cached = this.liveBlobUrls.get(trackId);
+    if (cached) {
+      try { URL.revokeObjectURL(cached); } catch {}
+      this.liveBlobUrls.delete(trackId);
+    }
     const db = await this.openDB();
     return new Promise((resolve, reject) => {
       const tx = db.transaction('audio_blobs', 'readwrite');

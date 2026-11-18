@@ -27,7 +27,7 @@ export const isMobileDevice = (): boolean => {
 };
 
 const AUDIO_ACCEPT_TYPES =
-  'audio/*,audio/mpeg,audio/mp3,audio/flac,audio/x-flac,audio/wav,audio/x-wav,audio/m4a,audio/x-m4a,audio/aac,audio/ogg,audio/opus,.mp3,.flac,.wav,.m4a,.aac,.ogg,.opus,.aiff,.alac,.wma';
+  'audio/*,audio/mp4,audio/m4a,audio/x-m4a,audio/aac,audio/mpeg,audio/mp3,audio/flac,audio/x-flac,audio/wav,audio/x-wav,audio/ogg,audio/opus,.m4a,.aac,.mp3,.flac,.wav,.ogg,.opus,.aiff,.alac,.wma,.mp4';
 
 export interface ProcessResult {
   successTracks: Track[];
@@ -388,12 +388,16 @@ class DeviceFileService {
         const existingMatch = existingCloudMap.get(normKey);
         const trackId = existingTrackMatch?.blobId || existingMatch?.id || `track-${Date.now()}-${i}-${Math.random().toString(36).substring(2, 7)}`;
         const localAudioUrl = existingTrackMatch?.audioUrl?.startsWith('blob:') ? existingTrackMatch.audioUrl : URL.createObjectURL(file);
-        const duration = existingTrackMatch?.duration || await this.probeAudioDuration(localAudioUrl, file.size);
+        const duration = tags?.duration || existingTrackMatch?.duration || await this.probeAudioDuration(localAudioUrl, file.size);
         const gradient = existingTrackMatch?.coverGradient || gradients[i % gradients.length];
 
-        // Save audio binary blob locally in browser IndexedDB only if not already stored
+        const isM4a = ext === 'M4A' || ext === 'AAC' || tags?.format === 'M4A';
+        const finalFormat = isM4a ? 'M4A' : ext;
+        const finalBitrate = tags?.bitrate || (isM4a ? '256 kbps (AAC HQ)' : ext === 'FLAC' || ext === 'WAV' ? 'Lossless Hi-Res' : '320 kbps');
+
+        // Save audio binary blob locally in browser IndexedDB with explicit format hint
         if (!existingTrackMatch || !existingTrackMatch.blobId) {
-          await offlineStorage.saveAudioBlob(trackId, file);
+          await offlineStorage.saveAudioBlob(trackId, file, { format: finalFormat, title });
         }
 
         const localTrack: Track = {
@@ -412,8 +416,8 @@ class DeviceFileService {
           isOfflineAvailable: true,
           isCloudSynced: Boolean(existingMatch || existingTrackMatch?.isCloudSynced),
           uploadedAt: existingTrackMatch?.uploadedAt || Date.now(),
-          format: ext,
-          bitrate: ext === 'FLAC' || ext === 'WAV' ? 'Lossless Hi-Res' : '320 kbps',
+          format: finalFormat,
+          bitrate: finalBitrate,
           fileSize: file.size,
           playCount: existingTrackMatch?.playCount || 0,
           liked: existingTrackMatch?.liked || false,

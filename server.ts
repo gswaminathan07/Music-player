@@ -1093,8 +1093,13 @@ app.post(
         genre: rawGenre || 'Audio',
         mood: rawMood || 'Chill',
         bpm: 118,
-        format: rawFormat.toUpperCase(),
-        bitrate: ext === 'flac' || ext === 'wav' ? 'Lossless Hi-Res' : '320 kbps High-Fidelity',
+        format: ext === 'm4a' || ext === 'aac' ? 'M4A' : rawFormat.toUpperCase(),
+        bitrate:
+          ext === 'flac' || ext === 'wav'
+            ? 'Lossless Hi-Res'
+            : ext === 'm4a' || ext === 'aac'
+            ? '256 kbps (AAC HQ)'
+            : '320 kbps High-Fidelity',
         fileSize: buffer.length,
         coverUrl: finalCoverUrl,
         coverGradient: 'from-amber-600 via-rose-700 to-indigo-950',

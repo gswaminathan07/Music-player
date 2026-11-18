@@ -566,11 +566,20 @@ export const FullScreenPlayer: React.FC<FullScreenPlayerProps> = ({
             <div className="space-y-2 text-xs">
               <div className="flex justify-between py-1.5 border-b border-zinc-800/60">
                 <span className="text-zinc-400">Audio Codec / Container</span>
-                <span className="font-mono text-zinc-200 font-semibold">{currentTrack.format || 'MP3'} Audio</span>
+                <span className="font-mono text-zinc-200 font-semibold">
+                  {currentTrack.format === 'M4A' || currentTrack.format === 'AAC'
+                    ? 'AAC-LC (MPEG-4 Part 14 / M4A)'
+                    : `${currentTrack.format || 'MP3'} Audio`}
+                </span>
               </div>
               <div className="flex justify-between py-1.5 border-b border-zinc-800/60">
                 <span className="text-zinc-400">Encoding Bitrate</span>
-                <span className="font-mono text-zinc-200">{currentTrack.bitrate || '320 kbps'}</span>
+                <span className="font-mono text-cyan-400 font-semibold">
+                  {currentTrack.bitrate ||
+                    (currentTrack.format === 'M4A' || currentTrack.format === 'AAC'
+                      ? '256 kbps (AAC HQ)'
+                      : '320 kbps')}
+                </span>
               </div>
               <div className="flex justify-between py-1.5 border-b border-zinc-800/60">
                 <span className="text-zinc-400">Studio Sample Rate</span>

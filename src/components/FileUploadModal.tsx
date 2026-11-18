@@ -329,7 +329,7 @@ export const FileUploadModal: React.FC<FileUploadModalProps> = ({
                 Or drag and drop audio files here from your laptop
               </p>
               <p className="text-[11px] font-mono text-zinc-500 mt-0.5">
-                FLAC · MP3 · WAV · M4A · AAC · OGG
+                M4A (YouTube Music AAC) · FLAC · MP3 · WAV · AAC · OGG
               </p>
             </div>
           </>

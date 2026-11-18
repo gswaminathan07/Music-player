@@ -22,6 +22,7 @@ import {
   Cloud,
   HardDrive,
   Loader2,
+  Activity,
 } from 'lucide-react';
 import { Track, UserPreferences, EqualizerSettings } from '../types/music';
 import { PixelTurntableWidget } from './PixelTurntableWidget';
@@ -376,6 +377,89 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           {/* TAB 3: AUDIO & SOUND */}
           {activeTab === 'audio' && (
             <div className="space-y-4">
+              {/* High Quality Audio Profile & YouTube Music AAC in M4A Container Tier */}
+              <div className="p-3.5 rounded-2xl bg-white/5 border border-white/5 space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2.5">
+                    <Volume2 className="w-4 h-4 text-cyan-400" />
+                    <div>
+                      <span className="text-xs font-bold text-white block">High Quality Audio Profile</span>
+                      <span className="text-[10px] text-zinc-400">
+                        YouTube Music standard AAC in M4A container & high-fidelity playback
+                      </span>
+                    </div>
+                  </div>
+                  <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded bg-cyan-500/15 text-cyan-400 border border-cyan-500/30">
+                    {preferences.audioQuality || '256kbps AAC (HQ)'}
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2 pt-1">
+                  {[
+                    {
+                      id: '256kbps AAC (HQ)',
+                      label: '256k AAC (HQ)',
+                      badge: 'YouTube Music / M4A',
+                      desc: 'Acoustic clarity & dynamic headroom',
+                    },
+                    {
+                      id: 'Lossless FLAC',
+                      label: 'Lossless FLAC',
+                      badge: 'Studio Hi-Res',
+                      desc: 'Bit-perfect studio dynamic range',
+                    },
+                    {
+                      id: '320kbps',
+                      label: '320k MP3',
+                      badge: 'Legacy MP3',
+                      desc: 'Maximum bitrate legacy MPEG',
+                    },
+                    {
+                      id: 'Master Audio',
+                      label: 'Master Audio',
+                      badge: '96kHz / 24-bit',
+                      desc: 'Direct analog pass-through',
+                    },
+                  ].map((tier) => {
+                    const isSelected =
+                      (preferences.audioQuality || '256kbps AAC (HQ)') === tier.id;
+                    return (
+                      <button
+                        key={tier.id}
+                        onClick={() => {
+                          onUpdatePreferences({
+                            ...preferences,
+                            audioQuality: tier.id as any,
+                          });
+                          showToast(`Audio Profile set to ${tier.label}`);
+                        }}
+                        className={`p-2.5 rounded-xl border text-left transition ${
+                          isSelected
+                            ? 'bg-cyan-950/40 border-cyan-500/80 text-white shadow-sm'
+                            : 'bg-zinc-900/60 border-zinc-800 text-zinc-400 hover:text-white'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between mb-0.5">
+                          <span className="text-xs font-bold text-zinc-100">{tier.label}</span>
+                          <span
+                            className={`text-[8px] font-mono px-1 py-0.2 rounded font-semibold ${
+                              isSelected
+                                ? 'bg-cyan-500/20 text-cyan-300'
+                                : 'bg-zinc-800 text-zinc-500'
+                            }`}
+                          >
+                            {tier.badge}
+                          </span>
+                        </div>
+                        <div className="text-[9px] text-zinc-400 font-mono leading-tight">
+                          {tier.desc}
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
               {/* Equalizer Quick Button */}
               <div className="flex items-center justify-between p-3.5 rounded-2xl bg-white/5 border border-white/5">
                 <div className="flex items-center gap-2.5">
@@ -521,6 +605,40 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   }`}
                 >
                   {preferences.keepScreenAwake ? 'ON' : 'OFF'}
+                </button>
+              </div>
+
+              {/* Anti-Clipping Bass Protection */}
+              <div className="flex items-center justify-between p-3.5 rounded-2xl bg-white/5 border border-white/5">
+                <div className="flex items-center gap-2.5 pr-2">
+                  <Activity className="w-4 h-4 text-orange-400 shrink-0" />
+                  <div>
+                    <span className="text-xs font-bold text-white block">Anti-Clipping Bass Protection</span>
+                    <span className="text-[10px] text-zinc-400 block leading-tight">
+                      Automatic soft-knee limiter & dynamic headroom. Eliminates static lag, pops, and audio cutouts during heavy sub-bass hits.
+                    </span>
+                  </div>
+                </div>
+                <button
+                  onClick={() => {
+                    const nextVal = !(preferences.antiClippingProtection ?? true);
+                    onUpdatePreferences({
+                      ...preferences,
+                      antiClippingProtection: nextVal,
+                    });
+                    showToast(
+                      nextVal
+                        ? 'Anti-Clipping enabled: Soft-knee limiter & dynamic headroom active'
+                        : 'Anti-Clipping disabled: Passthrough mode'
+                    );
+                  }}
+                  className={`px-3 py-1.5 rounded-xl text-xs font-bold shrink-0 transition ${
+                    (preferences.antiClippingProtection ?? true)
+                      ? 'bg-orange-500 text-zinc-950 font-black shadow-sm'
+                      : 'bg-white/10 text-white hover:bg-white/20'
+                  }`}
+                >
+                  {(preferences.antiClippingProtection ?? true) ? 'ON' : 'OFF'}
                 </button>
               </div>
 

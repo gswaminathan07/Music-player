@@ -10,6 +10,7 @@ export const INITIAL_PREFERENCES: UserPreferences = {
   platformLook: 'ios',
   offlineOnlyMode: false,
   keepScreenAwake: true,
+  antiClippingProtection: true,
 };
 
 export const INITIAL_EQUALIZER: EqualizerSettings = {

@@ -84,11 +84,22 @@ export const EqualizerDrawer: React.FC<EqualizerDrawerProps> = ({
         {/* Rack Header */}
         <div className="flex items-center justify-between border-b border-zinc-800 pb-4 mb-5">
           <div>
-            <h2 className="text-base font-bold text-zinc-100 tracking-tight">
-              10-Band Parametric Equalizer
-            </h2>
+            <div className="flex items-center gap-2">
+              <h2 className="text-base font-bold text-zinc-100 tracking-tight">
+                10-Band Parametric Equalizer
+              </h2>
+              <span className={`text-[10px] font-mono px-2 py-0.5 rounded-full uppercase tracking-wider ${
+                settings.enabled
+                  ? 'bg-orange-500/10 text-orange-400 border border-orange-500/20'
+                  : 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+              }`}>
+                {settings.enabled ? 'Studio DSP' : 'Direct Native (Hi-Fi)'}
+              </span>
+            </div>
             <p className="text-xs text-zinc-400 mt-0.5">
-              Calibrated acoustic response and studio target presets
+              {settings.enabled
+                ? 'WebAudio DSP active with soft-knee anti-clipping limiter'
+                : 'Direct hardware media pipeline matching YouTube Music'}
             </p>
           </div>
 
